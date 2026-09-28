@@ -14,19 +14,18 @@
  * ---------------------------------------------------------------------------
  * WHY A SINGLE FILE IS ENOUGH NOW
  *
- * D1's free tier allows 100,000 rows written per day. The schema uses FTS5 with
- * external content + `columnsize=0`, so the index costs almost nothing in writes.
- * Measured on the real dataset (34,289 served entries):
+ * D1's free tier allows 100,000 rows written per day. A full import of 34,279
+ * entries actually costs ~68,600 rows written (2.00 per entry), so it fits in one
+ * shot with about a third of the budget left over.
  *
- *   servers            34,289
- *   search_data         1,151   FTS5 term blocks
- *   search_idx          1,088   FTS5 term index pages
- *   search_config           1
- *   ---------------------------------
- *   total              36,529   = 37% of the daily budget, imported in one shot
+ * That 2.00/entry figure is CALIBRATED, not estimated. A first attempt at this
+ * file predicted 36,519 by counting the rows that exist at rest (servers plus the
+ * FTS5 shadow tables) — but D1 charges per row WRITTEN, and the FTS5 index writes
+ * internal rows while terms are added, most of which merge away and leave no
+ * trace. The real import reported 68,558. See generator/measure-writes.js.
  *
- * The default FTS5 flavour (which stores its own copy of the text plus a
- * per-row docsize) cost 102,882 rows and did NOT fit in a day; that is why
+ * The default FTS5 flavour (storing its own copy of the text plus a per-row
+ * docsize) costs roughly three times this and did NOT fit in a day; that is why
  * chunking used to exist. --chunk remains available as a safety valve.
  *
  * ---------------------------------------------------------------------------
@@ -77,7 +76,20 @@ const STATEMENT_BYTES = 90 * 1024;
 
 /** D1 free tier, and the measured FTS5 shadow cost of the full dataset. */
 const DAILY_WRITE_BUDGET = 100000;
-const FTS_SHADOW_ROWS = 2240; // 1,151 + 1,088 + 1 — see lib/schema.sql
+
+/**
+ * Rows written per entry, CALIBRATED against a real Cloudflare import.
+ *
+ * Counting the physical rows at rest is not the same as what D1 charges. A real
+ * import of 34,279 entries reported 68,558 rows written (2.00/entry), while the
+ * rows that exist afterwards add up to only 1.08/entry — the FTS5 index writes
+ * internal rows as terms are added, and most of those merge away and leave no
+ * trace. Charging is per row WRITTEN, so the honest figure is 2.00.
+ *
+ * See generator/measure-writes.js for the measurement, and
+ * data/write-measure.json for the stored result.
+ */
+const ROWS_WRITTEN_PER_ENTRY = 2.0;
 
 function arg(name, fallback) {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
@@ -253,7 +265,7 @@ async function main() {
 
   const dropped = [...dropReasons.values()].reduce((a, b) => a + b, 0);
   const avgBytes = built.length ? Math.round(servedBytes / built.length) : 0;
-  const estimatedWrites = serverRows.length + FTS_SHADOW_ROWS;
+  const estimatedWrites = Math.round(serverRows.length * ROWS_WRITTEN_PER_ENTRY);
   const stats = {
     generatedAt: new Date().toISOString(),
     rawRecords: records.length,
@@ -269,7 +281,12 @@ async function main() {
     avgBytesPerRecord: avgBytes,
     responseBytesPerPage: avgBytes * 100,
     statementBytesCap: STATEMENT_BYTES,
-    writes: { estimated: estimatedWrites, dailyBudget: DAILY_WRITE_BUDGET, ftsShadowRows: FTS_SHADOW_ROWS },
+    writes: {
+      estimated: estimatedWrites,
+      dailyBudget: DAILY_WRITE_BUDGET,
+      rowsWrittenPerEntry: ROWS_WRITTEN_PER_ENTRY,
+      basis: "calibrated against a real D1 import (see measure-writes.js)",
+    },
     translation: { ...translator.stats, cacheSize: translator.cache.size },
   };
   fs.writeFileSync(path.join(DATA, 'stats.json'), JSON.stringify(stats, null, 2), 'utf8');
@@ -286,10 +303,10 @@ async function main() {
   console.log('avg record   :', avgBytes, 'bytes  ->  ~', avgBytes * 100, 'bytes per 100-row page');
   console.log(`              (host caps a source response at 4 MB, so ~${(4194304 / (avgBytes * 100)).toFixed(0)}x headroom)`);
   console.log(
-    `writes       : ${serverRows.length.toLocaleString()} servers + ~${FTS_SHADOW_ROWS.toLocaleString()} FTS shadow ` +
-      `= ~${estimatedWrites.toLocaleString()}  (${((estimatedWrites / DAILY_WRITE_BUDGET) * 100).toFixed(0)}% of the ` +
-      `${DAILY_WRITE_BUDGET.toLocaleString()}/day free tier — imports in one shot)`,
-  );
+    `writes       : ~${estimatedWrites.toLocaleString()} rows ` +
+      `(${ROWS_WRITTEN_PER_ENTRY.toFixed(2)}/entry, calibrated) = ` +
+      `${((estimatedWrites / DAILY_WRITE_BUDGET) * 100).toFixed(0)}% of the ${DAILY_WRITE_BUDGET.toLocaleString()}/day ` +
+      `free tier — imports in one shot`);
 
   if (has('no-sql')) {
     console.log('--no-sql: skipping SQL output');

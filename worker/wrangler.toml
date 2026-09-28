@@ -9,7 +9,7 @@ compatibility_date = "2025-06-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "mcp-zh"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "fe25617e-f6fd-413a-9ff9-d49688011cf5"
 
 [observability]
 enabled = true

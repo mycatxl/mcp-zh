@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-09-28T14:10:42.511Z",
+  "generatedAt": "2026-09-28T16:57:23.125Z",
   "rawRecords": 36888,
   "entries": 34279,
   "dropped": 2599,
@@ -33,9 +33,10 @@
   "responseBytesPerPage": 90500,
   "statementBytesCap": 92160,
   "writes": {
-    "estimated": 36519,
+    "estimated": 68558,
     "dailyBudget": 100000,
-    "ftsShadowRows": 2240
+    "rowsWrittenPerEntry": 2,
+    "basis": "calibrated against a real D1 import (see measure-writes.js)"
   },
   "translation": {
     "hit": 57039,
