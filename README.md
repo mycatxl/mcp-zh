@@ -24,6 +24,19 @@ node scripts/deploy.mjs
 
 可重复执行，也兼作更新流程。没有 Cloudflare 账号时会自动打开浏览器让你注册（免费，不用绑卡）。
 
+### 导入到底是怎么跑的（为什么 43 MB 不是问题）
+
+`wrangler d1 execute --file --remote` **不是**把 SQL 拆开一条条发。它会：算文件 md5 → 让 D1 初始化一次导入 → 把**整份文件** PUT 到一个签名的 R2 地址 → 通知 D1 摄取 → 轮询到完成。
+
+所以：
+
+- 43 MB 一次性上传，**不会**因为体积失败
+- 整个导入是**单个事务**，失败会回滚到导入前的状态，**可以安全重试**
+- 真正适用的硬限制只有**单条语句 100 KB** 和**单行 2 MB**。`npm run test:limits` 会拿生成的 SQL 逐条核对这两项 —— 因为超限报的是 `SQLITE_TOOBIG`，而那是在上传**之后**才发生的
+- **导入期间数据库对外不可用**，所以这是手动步骤，而不是让 CI 每天自动跑
+
+脚本会读回导入报告里的**真实 `rows written`**，和我的推算对比，超额度会直接报错退出。
+
 ---
 
 ## 为什么必须用服务器
@@ -85,6 +98,8 @@ limit=1000  →  422  expected number <= 100
 
 前缀写在最前面，截断碰不到它。视觉上零损失：UI 显示的是 `title`，只有没有 title 时才会退回显示 name 的最后一段，而我们服务的每条都有中文标题。
 
+（另有 10~12 条是**我们内部**重复 —— 注册表里存在只差大小写/标点的名字，派生出的 id 相同。这个预期内，生成器保留第一条、跳过其余，因为客户端本来也会丢掉第二条。）
+
 ### 2. 分类塌陷
 
 `guessCategory()` 用**英文关键词**匹配 `name + title + description`。直接服务中文会让几乎全部条目塌进 devtools（实测 100 条里 80 → 93）。
@@ -113,6 +128,10 @@ D1 免费版每天 **10 万行写入**。FTS5 的索引方式直接决定能否�
 
 `servers` 表**故意不加任何二级索引**：每个索引都会给每次插入多加一行写入，两个索引就是给全量导入多加约 7.4 万行写入，而浏览读的是主键范围、分类过滤在客户端做，索引毫无收益。
 
+`columnsize=0` 是安全的：我们只取 `rowid`，而且实测 `bm25()` 在关闭 columnsize 后依然可用。
+
+**注意**：外部内容模式下 FTS5 **不会**去读 `servers` 表，所以 `rebuild` 命令会把**未折叠**的原文拿去建索引、静默弄坏所有中文搜索。索引必须在导入时喂 `fold()` 过的文本。
+
 ---
 
 ## 搜索设计
@@ -131,7 +150,7 @@ generator/
   step2-sample.js             抽样翻译并打印对照（质量评审用）
   step3-sql.js                翻译 + 生成 data/import.sql
   step4-verify.js             用真实 SQLite 验证导入、搜索、分页完整性
-  update.js                   增量刷新（全量重抓 + 本地 diff）
+  update.js                   刷新（全量重抓 + 本地 diff）
   extract-host-mapper.js      从 app.asar 提取宿主的映射函数（升级后重跑）
   check-id-collision.js       验证 id 方案不与官方撞车
   check-served.js             用宿主真实函数验证每条记录客户端都会显示
@@ -144,7 +163,12 @@ shared/
   shape.js                    记录形状 + id 派生 + 分类保护
 worker/src/index.js           registry 协议实现
 scripts/deploy.mjs            一键部署
-test/                         host-mapper / deploy-parse / e2e
+scripts/summary.mjs           数据摘要（CI 与本地共用）
+test/
+  host-mapper.js              宿主映射函数的单元测试
+  deploy-parse.js             部署脚本解析逻辑 + 安全约束
+  limits.js                   D1 硬限制预检（语句 100KB / 行 2MB / 无二级索引）
+  e2e.js                      对运行中的 Worker 做端到端断言
 ```
 
 ## 命令
@@ -152,21 +176,26 @@ test/                         host-mapper / deploy-parse / e2e
 ```bash
 npm run build         # 翻译 + 生成 import.sql
 npm run verify        # 真实 SQLite 全量验证
-npm run check:ids     # id 撞车检查
-npm run check:served  # 客户端可见性检查（用宿主真实函数）
-npm run test          # 全部检查
+npm run check:all     # id 撞车 + 客户端可见性 + D1 限制预检
+npm run summary       # 打印当前数据摘要
+npm run test          # 全部检查（单元 + 预检 + 全量 + 端到端）
+npm run dev           # 本地 wrangler dev（端口 8788）
 npm run deploy:all    # 一键部署
 ```
+
+`npm run test` 需要本地已有 D1 数据且 Worker 在 8788 上跑（`test:e2e` 会连它）。只跑离线部分用 `npm run test:unit` 和 `npm run check:all`。
 
 ## 更新数据
 
 ```bash
-node generator/step1-fetch.js   # 重新抓取
-node generator/step3-sql.js     # 只翻译新增的（有缓存）
+node generator/update.js        # 重新抓取（约 19 分钟）
+node generator/step3-sql.js     # 只翻译新增的（有缓存，秒级）
 node scripts/deploy.mjs         # 重新导入 + 部署
 ```
 
-`.github/workflows/refresh.yml` 已配置每日自动刷新。
+`.github/workflows/refresh.yml` 每天自动跑**抓取 + 翻译 + 全部检查**，但**故意不导入 D1** —— 导入期间数据库不可用，且要花掉 37% 的日写入额度，这种决定不该让 cron 替你做。
+
+翻译缓存（约 6 MB）通过 `actions/cache` 在 CI 各次运行之间传递，而不是提交进 git —— 否则仓库历史会被它撑大。
 
 ## 升级 PI-Desktop 后
 
@@ -176,3 +205,5 @@ node scripts/deploy.mjs         # 重新导入 + 部署
 node generator/extract-host-mapper.js --bundle=<app.asar 解出的 main/index.js>
 npm run check:served
 ```
+
+提取器会在报告成功前对生成的文件做语法检查，因为一个被截断的定义会生成"看起来合理"但一 import 就崩的文件。

@@ -1,12 +1,18 @@
-# Daily refresh of the MCP 中文源 dataset.
+# Daily refresh + health check of the MCP 中文源 dataset.
 #
-# Re-crawls the delta from the official registry, re-translates only the new
-# text (the translation cache is keyed on source text), regenerates the D1
-# import files, and commits them so the next deploy picks them up.
+# What this job is for: the mirror is only correct as long as the host's rules and
+# the upstream registry have not changed. Re-crawling, re-translating and
+# re-verifying every day turns "the mirror silently rotted" into a red CI run.
 #
-# Importing into D1 is deliberately NOT automated: the free tier allows 100,000
-# rows written per day, so a full reload cannot be pushed every day. Import one
-# part manually when you want to publish an update — see README.
+# It deliberately does NOT import into D1. A full reload applies the schema, which
+# DROPS and recreates both tables — a minute of downtime and 37% of the daily write
+# budget. Running that unattended on a cron is a deliberate decision, so it stays a
+# manual step: run `node scripts/deploy.mjs` when you want to publish an update.
+#
+# Nothing large is committed. The translation cache is the expensive artefact
+# (~6 minutes of API calls, and re-translating 60k strings daily would be rude to
+# the free endpoint), so it is carried between runs with actions/cache instead of
+# being committed — that keeps git history small.
 
 name: refresh
 
@@ -15,11 +21,6 @@ on:
     # 03:17 UTC daily — off the hour to avoid the busiest window.
     - cron: '17 3 * * *'
   workflow_dispatch:
-    inputs:
-      hours:
-        description: 'How many hours back to scan for changes'
-        required: false
-        default: '24'
 
 permissions:
   contents: write
@@ -36,20 +37,56 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Fetch registry delta
-        run: node generator/update.js --hours=${{ github.event.inputs.hours || '24' }}
+      # The cache makes translation incremental: only text that is genuinely new
+      # hits the endpoint. Keyed on the run id so a fresh cache is saved each run,
+      # with restore-keys falling back to the most recent one.
+      - name: Restore translation cache
+        uses: actions/cache@v4
+        with:
+          path: data/translation-cache.json
+          key: translation-cache-${{ github.run_id }}
+          restore-keys: |
+            translation-cache-
 
-      - name: Translate and regenerate SQL
-        run: node generator/step3-sql.js --chunk=8000
+      # A full re-crawl is the default and is FASTER than the server-side delta:
+      # `?updated_since=` works but paginating it took over 60 s per page in
+      # testing, versus ~0.15 s unfiltered. See generator/update.js.
+      - name: Fetch the registry (~19 min)
+        run: node generator/update.js
+
+      - name: Translate and regenerate the import file
+        run: node generator/step3-sql.js
 
       - name: Verify against a real SQLite engine
         run: node generator/step4-verify.js
 
-      - name: Commit regenerated data
+      - name: Check the id scheme against the client's own derivation
+        run: node generator/check-id-collision.js
+
+      - name: Check every record is visible to the client
+        run: node generator/check-served.js
+
+      # The host's acceptance rules are part of the protocol being mirrored, so a
+      # regression here means the mirror is broken, not the data.
+      - name: Check the extracted host mapper still behaves
+        run: node test/host-mapper.js
+
+      - name: Check the deploy script's parsing
+        run: node test/deploy-parse.js
+
+      - name: Report what changed
+        run: |
+          echo "### refresh result" >> $GITHUB_STEP_SUMMARY
+          node scripts/summary.mjs | tee -a $GITHUB_STEP_SUMMARY
+
+      # Only the small summary is committed — it is the reviewable record of what
+      # the dataset looks like now. Everything large is reproducible from the
+      # cache plus step3, so it stays out of git.
+      - name: Commit the summary
         run: |
           git config user.name  'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git add -A data/translation-cache.json data/stats.json data/d1 data/import.sql
+          git add -f data/stats.json
           if git diff --cached --quiet; then
             echo 'no changes'
           else

@@ -11,11 +11,26 @@
  *   2. creates the D1 database, or reuses it if it already exists
  *   3. writes its id into worker/wrangler.toml
  *   4. applies the schema
- *   5. imports data/import.sql, reporting the rows written against the daily quota
+ *   5. imports data/import.sql, and checks the REAL rows-written against the quota
  *   6. deploys the Worker and prints the source URL
  *
- * Nothing here is destructive: re-running re-applies the schema (which drops and
- * recreates the two tables) and re-imports, so it doubles as the update path.
+ * Re-running re-applies the schema (which drops and recreates the two tables) and
+ * re-imports, so it doubles as the update path.
+ *
+ * HOW THE IMPORT ACTUALLY WORKS, and why the file size is not a problem:
+ * `wrangler d1 execute --file --remote` does not split the SQL and fire it off
+ * statement by statement. It md5s the file, asks D1 to initialise an import, PUTs
+ * the whole file to a signed R2 URL, then tells D1 to ingest it and polls until
+ * done. So a 43 MB file goes up in one request, the import runs in a single
+ * transaction, and if it fails the database returns to its previous state — a
+ * failed run is always safe to retry. The only hard limits that apply are per
+ * STATEMENT (100 KB) and per ROW (2 MB); test/limits.js checks both against the
+ * generated file, because a statement over the limit fails with SQLITE_TOOBIG
+ * only after the upload has already happened.
+ *
+ * The database is UNAVAILABLE to serve queries while the import runs, which is
+ * why this is a deliberate manual step rather than something the daily workflow
+ * does on a cron.
  *
  * Flags:
  *   --skip-import     schema + deploy only (use when data is already loaded)
@@ -49,7 +64,7 @@ const SKIP_IMPORT = has('skip-import');
 
 /**
  * Run wrangler. On Windows, `npx` is a .ps1 shim that the default execution
- * policy blocks, so the .cmd shim is used explicitly.
+ * policy blocks, so the binary is invoked directly instead.
  */
 function wrangler(args, { capture = false, allowFail = false } = {}) {
   const bin = path.join(ROOT, 'node_modules', 'wrangler', 'bin', 'wrangler.js');
@@ -171,10 +186,39 @@ if (SKIP_IMPORT) {
         `(${pct}% of the ${DAILY_WRITE_BUDGET.toLocaleString()}/day free tier)`,
     );
   }
-  console.log('  this takes a minute or two; wrangler streams progress below');
-  wrangler(['d1', 'execute', DB_NAME, '--remote', `--file=${IMPORT_SQL}`, '-y']);
+  console.log('  the database is unavailable while this runs — usually 1-3 minutes.');
+  console.log('  the import is a single transaction, so a failure rolls back and is safe to retry.');
 
-  // Read the count back through the Worker path, not just the import's own report.
+  // Captured rather than streamed, because the summary line carries the REAL
+  // rows-written count — the only way to confirm the write-budget estimate
+  // against what Cloudflare actually charged.
+  const imported = wrangler(['d1', 'execute', DB_NAME, '--remote', `--file=${IMPORT_SQL}`, '-y'], {
+    capture: true,
+  });
+  process.stdout.write(imported.out);
+
+  const wrote = /(\d[\d,]*)\s+rows written/i.exec(imported.out);
+  if (wrote) {
+    const n = Number(wrote[1].replace(/,/g, ''));
+    const pct = (n / DAILY_WRITE_BUDGET) * 100;
+    console.log('');
+    console.log(`  ACTUAL rows written: ${n.toLocaleString()}  (${pct.toFixed(0)}% of the daily free tier)`);
+    if (n > DAILY_WRITE_BUDGET) {
+      fail(
+        `the import wrote ${n.toLocaleString()} rows, over the ${DAILY_WRITE_BUDGET.toLocaleString()}/day free-tier limit`,
+        'it will resume working the next day; re-run with --skip-import to just redeploy',
+      );
+    }
+    if (stats?.writes?.estimated) {
+      const drift = ((n - stats.writes.estimated) / stats.writes.estimated) * 100;
+      const note = Math.abs(drift) < 25 ? 'matches the estimate' : 'DIFFERS from the estimate — update step3';
+      console.log(`  estimate was ${stats.writes.estimated.toLocaleString()}  (${drift > 0 ? '+' : ''}${drift.toFixed(0)}% — ${note})`);
+    }
+  } else {
+    console.log('  (could not read a rows-written count from the output)');
+  }
+
+  // Read the count back through a separate query, not just the import's own report.
   const check = wrangler(
     ['d1', 'execute', DB_NAME, '--remote', '--json', '--command',
       'SELECT (SELECT COUNT(*) FROM servers) AS entries, (SELECT COUNT(*) FROM search_data) AS fts'],
@@ -185,9 +229,8 @@ if (SKIP_IMPORT) {
     const row = parsed?.[0]?.results?.[0];
     if (row) {
       console.log(`  verified in D1: ${Number(row.entries).toLocaleString()} entries, ${row.fts} FTS blocks`);
-      if (row.fts === 0) {
-        fail('the search index is empty', 'the import did not feed the FTS5 table');
-      }
+      if (Number(row.entries) === 0) fail('the servers table is empty after the import');
+      if (Number(row.fts) === 0) fail('the search index is empty', 'the import did not feed the FTS5 table');
     }
   } catch {
     console.log('  (could not parse the verification query; the import itself reported success)');
@@ -208,6 +251,9 @@ if (endpoint) {
   console.log(`    URL   ${endpoint}`);
   console.log('    Kind  registry\n');
   console.log('  Market -> Sources -> Add source, paste the URL, kind "registry".');
+  console.log('\n  Verify it is live:');
+  console.log(`    curl "${endpoint}?version=latest&limit=2"`);
+  console.log(`    curl "${endpoint.replace('/servers', '/health')}"`);
 } else {
   console.log('  Deployed, but the URL could not be read from the output above.');
   console.log('  It is on the line starting with "Deployed …".');

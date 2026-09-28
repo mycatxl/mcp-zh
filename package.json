@@ -14,12 +14,15 @@
     "check:ids": "node generator/check-id-collision.js",
     "check:served": "node generator/check-served.js",
     "measure": "node generator/measure-writes.js",
-    "test": "node test/host-mapper.js && node test/deploy-parse.js && node generator/check-served.js && node generator/step4-verify.js && node test/e2e.js",
+    "test": "node test/host-mapper.js && node test/deploy-parse.js && node test/limits.js && node generator/check-id-collision.js && node generator/check-served.js && node generator/step4-verify.js && node test/e2e.js",
     "test:unit": "node test/host-mapper.js && node test/deploy-parse.js",
     "test:e2e": "node test/e2e.js",
     "dev": "wrangler dev --local --port 8788",
     "deploy": "wrangler deploy",
-    "deploy:all": "node scripts/deploy.mjs"
+    "deploy:all": "node scripts/deploy.mjs",
+    "test:limits": "node test/limits.js",
+    "summary": "node scripts/summary.mjs --text",
+    "check:all": "node generator/check-id-collision.js && node generator/check-served.js && node test/limits.js"
   },
   "engines": {
     "node": ">=22.5"
