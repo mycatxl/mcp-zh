@@ -1,0 +1,37 @@
+{
+  "generatedAt": "2026-09-28T11:38:28.603Z",
+  "entries": 36881,
+  "installable": 34294,
+  "unmappable": 2587,
+  "duplicateIds": 7,
+  "duplicateExamples": [
+    "io.github.Clocknext/mcp  ==  io.github.ClockNext/mcp",
+    "io.github.LocalSynapse/localsynapse-mcp  ==  io.github.LocalSynapse/LocalSynapse-mcp",
+    "io.github.Zuga-luga/zugabot  ==  io.github.Zuga-luga/Zugabot",
+    "io.github.aggrete/aggrete  ==  io.github.Aggrete/aggrete",
+    "io.github.dfch/biz.dfch.specmgr  ==  io.github.dfch/biz-dfch-specmgr",
+    "io.github.sceneview/mcp  ==  io.github.SceneView/mcp",
+    "io.github.silbercue/silbercueswift  ==  io.github.Silbercue/silbercueswift"
+  ],
+  "withTitle": 36881,
+  "withDescription": 36881,
+  "categories": {
+    "devtools": 25642,
+    "web": 5716,
+    "productivity": 3365,
+    "data": 1725,
+    "docs": 433
+  },
+  "servedBytes": 33849389,
+  "avgBytesPerRecord": 918,
+  "responseBytesPerPage": 91800,
+  "statementBytesCap": 92160,
+  "translation": {
+    "hit": 57039,
+    "miss": 0,
+    "chars": 0,
+    "requests": 0,
+    "failed": 0,
+    "cacheSize": 57046
+  }
+}

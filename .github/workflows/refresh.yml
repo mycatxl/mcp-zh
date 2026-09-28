@@ -1,0 +1,58 @@
+# Daily refresh of the MCP 中文源 dataset.
+#
+# Re-crawls the delta from the official registry, re-translates only the new
+# text (the translation cache is keyed on source text), regenerates the D1
+# import files, and commits them so the next deploy picks them up.
+#
+# Importing into D1 is deliberately NOT automated: the free tier allows 100,000
+# rows written per day, so a full reload cannot be pushed every day. Import one
+# part manually when you want to publish an update — see README.
+
+name: refresh
+
+on:
+  schedule:
+    # 03:17 UTC daily — off the hour to avoid the busiest window.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: 'How many hours back to scan for changes'
+        required: false
+        default: '24'
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Fetch registry delta
+        run: node generator/update.js --hours=${{ github.event.inputs.hours || '24' }}
+
+      - name: Translate and regenerate SQL
+        run: node generator/step3-sql.js --chunk=8000
+
+      - name: Verify against a real SQLite engine
+        run: node generator/step4-verify.js
+
+      - name: Commit regenerated data
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add -A data/translation-cache.json data/stats.json data/d1 data/import.sql
+          if git diff --cached --quiet; then
+            echo 'no changes'
+          else
+            git commit -m "data: refresh $(date -u +%Y-%m-%d)"
+            git push
+          fi

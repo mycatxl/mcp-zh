@@ -1,0 +1,17 @@
+# Build artefacts and secrets — never commit these.
+
+node_modules/
+.wrangler/
+
+# Crawl output and generated SQL (reproducible from step1/step3; ~120 MB total)
+data/raw.jsonl
+data/raw.meta.json
+data/import.sql
+data/d1/
+data/translation-cache.json
+data/*.log
+data/*.pid
+data/sample-*.json
+
+# Keep the stats summary — it is small and useful in review.
+!data/stats.json

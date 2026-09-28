@@ -1,0 +1,15 @@
+#:schema node_modules/wrangler/config-schema.json
+name = "mcp-zh-registry"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+
+# Local `wrangler dev` works with this placeholder because Miniflare keeps its
+# own SQLite file under .wrangler/state. Replace it with the real id printed by
+# `wrangler d1 create mcp-zh` before running `wrangler deploy`.
+[[d1_databases]]
+binding = "DB"
+database_name = "mcp-zh"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[observability]
+enabled = true

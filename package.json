@@ -1,0 +1,27 @@
+{
+  "name": "mcp-zh-registry",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A Chinese-translated mirror of the official MCP registry, served through the same paginated registry protocol so PI-Desktop's MCP market can consume it as a custom source.",
+  "scripts": {
+    "fetch": "node generator/step1-fetch.js",
+    "sample": "node generator/step0-sample.js",
+    "translate": "node generator/step2-translate.js",
+    "sql": "node generator/step3-sql.js",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init": "wrangler d1 execute mcp-zh --file=generator/lib/schema.sql --remote",
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "workerd@1.20260926.1": true
+  }
+}
