@@ -3,9 +3,10 @@
 -- Apply once, before importing:
 --   wrangler d1 execute mcp-zh --file=generator/lib/schema.sql --remote
 --
--- Two tables:
+-- Three tables:
 --   servers — one row per entry, holding the full official-shaped record as JSON
 --   search  — FTS5 index over CJK-bigram-folded text (see shared/fold.js)
+--   meta    — key/value, currently just the published content hash
 --
 -- `servers.id` is both the ordering key and the pagination cursor, and it is
 -- reused as the FTS5 `rowid`, so a search hit maps straight back to its record.
@@ -15,27 +16,24 @@
 --
 -- D1's free tier allows 100,000 rows written per day, and FTS5 writes into its
 -- own shadow tables, so the index flavour decides whether a full import fits in
--- a single day. Measured on the real dataset (34,294 installable entries), by
--- counting the physical rows each flavour actually creates:
+-- a single day. Calibrated against a real import of 34,279 entries, which
+-- reported 68,558 rows written (2.00 per entry):
 --
 --   default fts5  (stores a copy of the text + per-row docsize)
---       search_content 34,294 + search_docsize 34,294 + servers 34,294 = 102,882
---       -> OVER budget; the import would be cut off partway through
+--       roughly 3x the cost — a full import does NOT fit in one day
 --
 --   content='servers', columnsize=0   <-- this one
---       search_data 1,115 + search_idx 1,036 + search_config 1 + servers 34,294
---       -> 36,446 rows, 36% of the daily budget, one import, no splitting
+--       2.00 rows written per entry, 68.6% of the daily budget, one shot
 --
 --   contentless (content='')
---       keeps search_docsize (34,294) -> 70,740 rows; fits, but it cannot
---       report row positions and is a dead end if we ever need them
+--       keeps search_docsize; fits, but cannot report row positions
 --
 -- `columnsize=0` is safe here because we only ever ask for `rowid`; bm25() was
--- verified to still work without it (measured on SQLite 3.5x: -1.9688613487928486).
--- External content means FTS5 stores no copy of the text — `servers` holds the
--- Chinese text, and the folded bigrams are inserted into the index explicitly.
--- A `rebuild` command would NOT work, because it re-reads the *unfolded* content
--- table; the index must be fed `fold()`ed text at import time.
+-- verified to still work without it. External content means FTS5 stores no copy
+-- of the text — `servers` holds the Chinese text, and the folded bigrams are
+-- inserted into the index explicitly. A `rebuild` command would NOT work,
+-- because it re-reads the *unfolded* content table; the index must be fed
+-- `fold()`ed text at import time.
 --
 -- NOTE the module name must be lowercase `fts5`. D1 rejects `FTS5` with
 -- "not authorized".
@@ -50,7 +48,7 @@
 --
 -- Deliberately NO secondary indexes on `servers`. Every index adds a row written
 -- per insert, and D1's free tier allows 100,000 rows written per day — two
--- indexes would add ~74,000 writes to a full import for no benefit: browse reads
+-- indexes would add ~68,000 writes to a full import for no benefit: browse reads
 -- the primary-key range, and category filtering happens client-side.
 --
 -- Column is `description`, not `desc`, because DESC is a SQL keyword.
@@ -74,6 +72,7 @@
 -- Both are correct; the second avoids materialising and sorting the full hit
 -- set, which is what keeps a search inside D1's per-query CPU budget.
 
+DROP TABLE IF EXISTS meta;
 DROP TABLE IF EXISTS search;
 DROP TABLE IF EXISTS servers;
 
@@ -96,4 +95,12 @@ CREATE VIRTUAL TABLE search USING fts5 (
   content_rowid = 'id',
   columnsize = 0,
   tokenize = 'unicode61 remove_diacritics 2'
+);
+
+-- Small key/value table. `content_hash` is what the refresh workflow compares
+-- against to decide whether a D1 import is worth its ~69% of the daily write
+-- budget; /health reports it so the decision needs no database access.
+CREATE TABLE meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );

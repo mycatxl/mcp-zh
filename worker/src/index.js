@@ -14,7 +14,12 @@
  *  - it maps our records itself via mapRegistryServer(), so we only need to
  *    return official-shaped records with Chinese `title` / `description`
  *  - a per-response cap of 4 MB and an 8 s timeout apply; we serve 100 records
- *    (~92 KB) at a time, so there is ~46x headroom
+ *    (~90 KB) at a time, so there is ~46x headroom
+ *
+ * /health additionally reports `contentHash`, the fingerprint of the served
+ * dataset. The refresh workflow compares it against the freshly built hash to
+ * decide whether importing is worth ~69% of D1's daily write budget — so the
+ * check must not touch `servers`, or it would cost rows-read on every poll.
  */
 
 import { toMatch, needsLikeFallback, likePattern } from '../../shared/fold.js';
@@ -28,7 +33,9 @@ function json(body, status = 200) {
     status,
     headers: {
       'content-type': 'application/json; charset=utf-8',
-      'cache-control': 'no-store',
+      // The dataset only changes when a new import runs, so a short shared cache
+      // is safe and keeps repeat polls off the database entirely.
+      'cache-control': 'public, max-age=300',
       'access-control-allow-origin': '*',
       'access-control-allow-headers': '*',
     },
@@ -131,21 +138,34 @@ async function handleServers(url, env) {
   });
 }
 
+/**
+ * Cheap by construction: reads `meta` (three small rows) and the highest
+ * `servers.id`, never the table itself. A `COUNT(*)` here would scan all 34,279
+ * rows on every poll, which is a pointless rows-read cost for a health check.
+ */
 async function handleHealth(env) {
-  const [count, sample] = await Promise.all([
-    env.DB.prepare('SELECT COUNT(*) AS n FROM servers').first(),
-    env.DB.prepare('SELECT id, json FROM servers ORDER BY id LIMIT 1').first(),
+  const [entries, metaRows, first] = await Promise.all([
+    env.DB.prepare('SELECT MAX(id) AS n FROM servers').first(),
+    env.DB.prepare('SELECT key, value FROM meta').all(),
+    env.DB.prepare('SELECT json FROM servers ORDER BY id LIMIT 1').first(),
   ]);
-  let first = null;
+
+  const meta = {};
+  for (const row of metaRows?.results ?? []) meta[row.key] = row.value;
+
+  let firstName = null;
   try {
-    first = sample?.json ? (JSON.parse(sample.json)?.server?.name ?? null) : null;
+    firstName = first?.json ? (JSON.parse(first.json)?.server?.name ?? null) : null;
   } catch {
-    first = null;
+    firstName = null;
   }
+
   return json({
     ok: true,
-    entries: count?.n ?? 0,
-    first,
+    entries: entries?.n ?? 0,
+    contentHash: meta.content_hash ?? null,
+    publishedAt: meta.published_at ?? null,
+    first: firstName,
     protocol: 'registry',
     endpoint: '/servers',
   });
@@ -176,7 +196,7 @@ export default {
           name: 'MCP 中文源',
           kind: 'registry',
           endpoint: `${url.origin}/servers`,
-          usage: 'MCP 市场 → 源管理 → 添加源，类型选 registry，URL 填上面的 endpoint',
+          usage: 'MCP 市场 → 源管理 → 添加源，类型选 Registry 协议，URL 填上面的 endpoint',
         });
       }
       return json({ error: 'not found' }, 404);

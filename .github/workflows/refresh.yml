@@ -1,34 +1,59 @@
-# Daily refresh + health check of the MCP 中文源 dataset.
+# Fully automated refresh AND publish of the MCP 中文源.
 #
-# What this job is for: the mirror is only correct as long as the host's rules and
-# the upstream registry have not changed. Re-crawling, re-translating and
-# re-verifying every day turns "the mirror silently rotted" into a red CI run.
+# What runs: re-crawl the official registry, re-translate only what is new, verify
+# everything, then import into D1 and redeploy the Worker — but ONLY when the
+# served content actually changed.
 #
-# It deliberately does NOT import into D1. A full reload applies the schema, which
-# DROPS and recreates both tables — a minute of downtime and 37% of the daily write
-# budget. Running that unattended on a cron is a deliberate decision, so it stays a
-# manual step: run `node scripts/deploy.mjs` when you want to publish an update.
+# WHY THE CHANGE DETECTION EXISTS
+# A full import writes ~68,600 rows, which is ~69% of D1's free daily write budget.
+# Importing every day "just in case" would consume the quota for no benefit and
+# leave nothing to retry with after a failure. generator/step3-sql.js therefore
+# emits a contentHash over exactly what the market sees; if it matches the hash
+# already published, this job stops before touching D1.
 #
-# Nothing large is committed. The translation cache is the expensive artefact
-# (~6 minutes of API calls, and re-translating 60k strings daily would be rude to
-# the free endpoint), so it is carried between runs with actions/cache instead of
-# being committed — that keeps git history small.
+# WHY THE REFRESH DOES NOT RUN ON CLOUDFLARE
+# Workers Cron Triggers are limited to 10 ms of CPU per invocation on the free
+# plan, and crawling the registry takes about 19 minutes. The scheduled side has
+# to run where long jobs are allowed, so GitHub Actions does the refresh and
+# Cloudflare does the serving.
+#
+# REQUIRED REPOSITORY SECRETS (Settings -> Secrets and variables -> Actions)
+#   CLOUDFLARE_API_TOKEN   from dash.cloudflare.com/profile/api-tokens,
+#                          using the "Edit Cloudflare Workers" template
+#   CLOUDFLARE_ACCOUNT_ID  the account id shown in the dashboard URL
+# Without them the verify steps still run and the publish steps are skipped, so a
+# fork or a fresh clone does not fail.
+#
+# DOWNTIME: applying the schema drops and recreates both tables. Measured import
+# time is ~6 seconds, and the import is a single transaction that rolls back on
+# failure, so the exposure is small and a failed run is safe to retry.
 
 name: refresh
 
 on:
   schedule:
-    # 03:17 UTC daily — off the hour to avoid the busiest window.
+    # 03:17 UTC daily — off the hour, to avoid the busiest window.
     - cron: '17 3 * * *'
   workflow_dispatch:
+    inputs:
+      force_publish:
+        description: 'Import into D1 even if the content hash is unchanged'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
+concurrency:
+  # Never let two refreshes overlap: both would try to drop and recreate the same
+  # tables, and the daily write budget only covers one full import.
+  group: refresh
+  cancel-in-progress: false
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
@@ -36,10 +61,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: npm
 
-      # The cache makes translation incremental: only text that is genuinely new
-      # hits the endpoint. Keyed on the run id so a fresh cache is saved each run,
-      # with restore-keys falling back to the most recent one.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      # The translation cache is the expensive artefact: ~6 minutes of calls to a
+      # free endpoint, and re-translating 60k strings daily would be rude to it.
+      # Carried between runs by cache rather than committed, to keep git history
+      # small. Keyed on the run id so each run saves a fresh copy, with
+      # restore-keys falling back to the most recent one.
       - name: Restore translation cache
         uses: actions/cache@v4
         with:
@@ -71,15 +102,67 @@ jobs:
       - name: Check the extracted host mapper still behaves
         run: node test/host-mapper.js
 
+      - name: Check source ordering rules
+        run: node test/source-order.js
+
       - name: Check the deploy script's parsing
         run: node test/deploy-parse.js
 
-      - name: Report what changed
-        run: |
-          echo "### refresh result" >> $GITHUB_STEP_SUMMARY
-          node scripts/summary.mjs | tee -a $GITHUB_STEP_SUMMARY
+      - name: Check D1 limits before uploading
+        run: node test/limits.js
 
-      # Only the small summary is committed — it is the reviewable record of what
+      # ---- publish ---------------------------------------------------------
+      - name: Read the published hash
+        id: published
+        run: |
+          HASH=$(curl -sS --max-time 20 "https://mcp-zh-registry.gplusss.workers.dev/health" \
+                 | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{process.stdout.write(String(JSON.parse(d).contentHash??""))}catch{process.stdout.write("")}})')
+          echo "hash=$HASH" >> "$GITHUB_OUTPUT"
+          echo "published hash: ${HASH:-（none）}"
+
+      - name: Decide whether to publish
+        id: decide
+        run: |
+          NEW=$(node -p 'require("./data/stats.json").contentHash')
+          OLD="${{ steps.published.outputs.hash }}"
+          FORCE="${{ github.event.inputs.force_publish }}"
+          echo "new=$NEW" >> "$GITHUB_OUTPUT"
+          if [ "$NEW" = "$OLD" ] && [ "$FORCE" != "true" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "content unchanged ($NEW) — skipping the D1 import"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "content changed: ${OLD:-（none）} -> $NEW"
+          fi
+
+      - name: Import into D1 and redeploy
+        if: steps.decide.outputs.publish == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::warning::CLOUDFLARE_API_TOKEN is not set — skipping the publish step."
+            echo "Add it under Settings -> Secrets and variables -> Actions to enable auto-publish."
+            exit 0
+          fi
+          node scripts/deploy.mjs
+
+      - name: Summarise
+        run: |
+          {
+            echo "### refresh result"
+            echo ""
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| content hash | \`${{ steps.decide.outputs.new }}\` |"
+            echo "| previous | \`${{ steps.published.outputs.hash || '（none）' }}\` |"
+            echo "| published | ${{ steps.decide.outputs.publish }} |"
+            echo ""
+            node scripts/summary.mjs
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Only the small summary is committed: it is the reviewable record of what
       # the dataset looks like now. Everything large is reproducible from the
       # cache plus step3, so it stays out of git.
       - name: Commit the summary
@@ -90,6 +173,6 @@ jobs:
           if git diff --cached --quiet; then
             echo 'no changes'
           else
-            git commit -m "data: refresh $(date -u +%Y-%m-%d)"
+            git commit -m "data: refresh $(date -u +%Y-%m-%d) [skip ci]"
             git push
           fi

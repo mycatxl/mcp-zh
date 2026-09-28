@@ -54,6 +54,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { Translator, nameTokens } from './lib/translate.js';
 import { buildServedRecord } from '../shared/shape.js';
@@ -264,10 +265,20 @@ async function main() {
   });
 
   const dropped = [...dropReasons.values()].reduce((a, b) => a + b, 0);
+  // A stable fingerprint of everything the market will actually see. Two runs
+  // over unchanged upstream data produce the same hash, which lets the refresh
+  // workflow skip the D1 import — and skip burning 68.6% of the daily write
+  // budget — when there is nothing new to publish.
+  const contentHash = createHash('sha256')
+    .update(serverRows.map((r) => [r[1], r[4] ?? '', r[5] ?? '', r[7] ?? ''].join('\u0001')).join('\n'))
+    .digest('hex')
+    .slice(0, 16);
+
   const avgBytes = built.length ? Math.round(servedBytes / built.length) : 0;
   const estimatedWrites = Math.round(serverRows.length * ROWS_WRITTEN_PER_ENTRY);
   const stats = {
     generatedAt: new Date().toISOString(),
+    contentHash,
     rawRecords: records.length,
     entries: built.length,
     dropped,
@@ -292,6 +303,7 @@ async function main() {
   fs.writeFileSync(path.join(DATA, 'stats.json'), JSON.stringify(stats, null, 2), 'utf8');
 
   console.log('--------------------------------------------');
+  console.log('content hash :', stats.contentHash, '(unchanged hash => nothing to publish)');
   console.log('raw records  :', stats.rawRecords);
   console.log('served       :', stats.entries, '(every one is installable and visible)');
   console.log('dropped      :', stats.dropped, '(the client would drop these; serving them wastes page slots)');
@@ -327,10 +339,21 @@ async function main() {
 
   // Single file: the whole dataset fits in one day's write budget, so this is
   // what the deploy script imports.
+  // The content hash is written as part of the same import, so /health can report
+  // what is actually published without reading a single server row.
+  const metaSql = [
+    'INSERT INTO meta (key, value) VALUES',
+    `  ('content_hash', '${stats.contentHash}'),`,
+    `  ('published_at', '${stats.generatedAt}'),`,
+    `  ('entries', '${stats.entries}')`,
+    'ON CONFLICT(key) DO UPDATE SET value = excluded.value;',
+  ].join('\n');
+
   const single = [
     ...header,
     ...buildInserts('servers', columns, serverRows),
     ...buildInserts('search', searchColumns, searchRows),
+    metaSql,
     '',
   ];
   const sqlPath = path.join(DATA, 'import.sql');
@@ -353,6 +376,9 @@ async function main() {
         '',
         ...buildInserts('servers', columns, serverRows.slice(start, end)),
         ...buildInserts('search', searchColumns, searchRows.slice(start, end)),
+        // Only the FINAL part writes the hash, so an interrupted multi-part import
+        // cannot advertise a hash for data that was never fully loaded.
+        ...(end === serverRows.length ? [metaSql] : []),
         '',
       ].join('\n');
       const name = `part-${label}.sql`;
