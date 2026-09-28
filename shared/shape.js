@@ -5,17 +5,34 @@
  * Two hard constraints discovered by reading app.asar, both handled here:
  *
  * 1) ID COLLISION. The client derives an entry id from `server.name`
- *    (`registryIdFromName`) and merges sources with "first source wins".
- *    The official source is force-prepended by `sanitizeMarketSources()`, so an
- *    entry whose id matches an official one is silently discarded. We therefore
- *    suffix the name, which changes the derived id (`...-zh-<cat>`) and keeps the
- *    Chinese entry alive as a separate, installable card.
+ *    (`registryIdFromName`) and merges sources with "first source wins". The
+ *    official source is force-prepended by `sanitizeMarketSources()`, so an entry
+ *    whose id matches an official one is silently discarded.
+ *
+ *    The obvious fix — suffixing the name — DOES NOT WORK: `registryIdFromName`
+ *    truncates the slug to 60 characters, so on a long registry name the suffix
+ *    is cut off entirely and the id collapses back onto the official one.
+ *    Measured against the real dataset with the host's own function:
+ *
+ *        name + "/zh/<category>"   158 records collide  (silently dropped)
+ *        "zh-<category>/" + name     0 records collide
+ *
+ *    So the marker goes at the FRONT, where truncation cannot reach it. Nothing
+ *    is lost visually: `mapRegistryServer()` shows `server.title` and only falls
+ *    back to the last path segment of the name when there is no title, and every
+ *    record we serve has a translated title.
  *
  * 2) CATEGORY DRIFT. `guessCategory()` keyword-matches English text against
  *    name + title + description. Serving Chinese there collapses almost
- *    everything into "devtools" (measured: 80 -> 93 of 100). `name` is the one
- *    field the UI never displays when a title is present, so we park an English
- *    category keyword there and keep the real category intact.
+ *    everything into "devtools" (measured: 80 -> 93 of 100). The category is
+ *    computed from the ORIGINAL English record and its keyword is parked in the
+ *    name, which the UI never displays, so the client's own scan lands on the
+ *    category we intended.
+ *
+ *    `generator/check-served.js` re-runs the host's real guessCategory() over the
+ *    served records and reports any record whose category still drifts — that can
+ *    happen when the Chinese translation itself contains an English technical
+ *    term belonging to an earlier category in the scan order.
  */
 
 const CATEGORY_KEYWORDS = [
@@ -39,6 +56,9 @@ const CATEGORY_HINT = {
   devtools: 'api',
   docs: 'docs',
 };
+
+/** Marker that keeps our ids distinct from the official ones. Must stay first. */
+export const ZH_PREFIX = 'zh';
 
 /** Mirrors the host's own guessCategory() so our category matches what the UI shows. */
 export function guessCategory(server) {
@@ -82,8 +102,14 @@ function isPublicHttpsUrl(value) {
 }
 
 /**
- * Would the host's mapRegistryServer() accept this record?
- * Priority mirrors the host exactly: npm -> pypi -> streamable-http remote.
+ * A fast, approximate pre-filter: does this record have anything installable at
+ * all? Mirrors the host's npm -> pypi -> streamable-http priority.
+ *
+ * This is only a cheap screen for reporting. The authoritative check is the
+ * host's own `mapRegistryServer()` (see generator/lib/host-mapper.generated.js),
+ * which the generator runs over the SERVED record — that also catches traps this
+ * cannot, such as an env placeholder the client considers undeclared.
+ *
  * @returns {{ok: boolean, transport?: string, reason?: string}}
  */
 export function installability(server) {
@@ -123,7 +149,8 @@ export function displayName(server) {
 export function buildServedRecord(record, zh = {}) {
   const src = record?.server ?? {};
   const sourceName = String(src.name ?? '');
-  // Category is computed from the ORIGINAL English text, then preserved via the name hint.
+  // Category is computed from the ORIGINAL English text, then preserved via the
+  // hint parked at the front of the name.
   const category = guessCategory(src);
   const hint = CATEGORY_HINT[category] ?? 'api';
 
@@ -132,7 +159,9 @@ export function buildServedRecord(record, zh = {}) {
 
   const served = {
     ...src,
-    name: `${sourceName}/zh/${hint}`,
+    // "<zh>/<hint>/<original>" -> the derived id starts with "zh-<hint>-", which
+    // no truncation can remove. See the file header for the measurement.
+    name: `${ZH_PREFIX}/${hint}/${sourceName}`,
     title: titleZh || (typeof src.title === 'string' ? src.title.trim() : '') || displayName(src),
     description: descZh || src.description,
   };
@@ -147,16 +176,4 @@ export function buildServedRecord(record, zh = {}) {
   };
 
   return { served, meta, id, category, sourceName };
-}
-
-/** Text blobs that go into the search index for one served record. */
-export function indexText(served, category) {
-  const original = served.name.replace(/\/zh\/[a-z]+$/, '');
-  return {
-    servedName: served.name,
-    titleZh: served.title ?? '',
-    descZh: served.description ?? '',
-    originalName: original,
-    category: category ?? '',
-  };
 }

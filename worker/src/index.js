@@ -76,13 +76,21 @@ async function searchLike(db, { limit, cursor, query }) {
   return results ?? [];
 }
 
+/**
+ * The cursor constrains `f.rowid` (the FTS side), not `s.id`.
+ *
+ * Both spellings return the same rows, but constraining the joined table makes
+ * SQLite collect every hit and sort it (`USE TEMP B-TREE FOR ORDER BY`);
+ * constraining the index lets the cursor go into the FTS scan itself. Verified
+ * with EXPLAIN QUERY PLAN — see generator/lib/schema.sql for both plans.
+ */
 async function searchFts(db, { limit, cursor, match }) {
   const { results } = await db
     .prepare(
       `SELECT s.id AS id, s.json AS json
        FROM search f JOIN servers s ON s.id = f.rowid
-       WHERE search MATCH ?1 AND s.id > ?2
-       ORDER BY s.id LIMIT ?3`,
+       WHERE search MATCH ?1 AND f.rowid > ?2
+       ORDER BY f.rowid LIMIT ?3`,
     )
     .bind(match, cursor, limit)
     .all();

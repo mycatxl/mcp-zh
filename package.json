@@ -1,23 +1,25 @@
 {
   "name": "mcp-zh-registry",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "A Chinese-translated mirror of the official MCP registry. Ships as static catalog files in git (no server needed) and optionally as a Cloudflare Worker speaking the same paginated registry protocol.",
+  "description": "A Chinese translation of the official MCP registry, served through the same paginated protocol — one source URL in the market, no plugins, works in strict network mode.",
   "scripts": {
     "fetch": "node generator/step1-fetch.js",
     "sample": "node generator/step2-sample.js",
-    "translate": "node generator/step3-sql.js",
-    "sql": "node generator/step3-sql.js --chunk=8000",
-    "catalog": "node generator/build-catalog.js",
-    "measure": "node generator/measure-catalog.js",
-    "update": "node generator/update.js",
+    "build": "node generator/step3-sql.js",
     "verify": "node generator/step4-verify.js",
-    "test": "node test/catalog.js && node test/e2e.js",
-    "test:catalog": "node test/catalog.js",
+    "update": "node generator/update.js",
+    "host-mapper": "node generator/extract-host-mapper.js",
+    "check:ids": "node generator/check-id-collision.js",
+    "check:served": "node generator/check-served.js",
+    "measure": "node generator/measure-writes.js",
+    "test": "node test/host-mapper.js && node test/deploy-parse.js && node generator/check-served.js && node generator/step4-verify.js && node test/e2e.js",
+    "test:unit": "node test/host-mapper.js && node test/deploy-parse.js",
     "test:e2e": "node test/e2e.js",
-    "dev": "wrangler dev --local",
-    "deploy": "wrangler deploy"
+    "dev": "wrangler dev --local --port 8788",
+    "deploy": "wrangler deploy",
+    "deploy:all": "node scripts/deploy.mjs"
   },
   "engines": {
     "node": ">=22.5"

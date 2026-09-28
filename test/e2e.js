@@ -6,8 +6,13 @@
  *   - GET /servers?version=latest&search=<q>&limit=100 (server-side search)
  * and asserts the response contract the host depends on.
  *
+ * The acceptance checks run the host's OWN extracted functions
+ * (generator/lib/host-mapper.generated.js), so "the client would show this"
+ * is decided by the client's code, not by a reimplementation of it.
+ *
  *   node test/e2e.js [--base=http://127.0.0.1:8788] [--pages=6]
  */
+import { mapRegistryServer } from '../generator/lib/host-mapper.generated.js';
 
 function arg(name, fallback) {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
@@ -45,41 +50,17 @@ async function get(url) {
   }
 }
 
-/** The host derives this; our served names must produce unique, valid ids. */
-function registryIdFromName(name) {
-  const slug = String(name ?? '')
-    .toLowerCase()
-    .split('/')
-    .map((p) => p.replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, ''))
-    .filter(Boolean)
-    .join('-')
-    .replace(/-+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 60);
-  if (!slug) return 'mcp-server';
-  return /^[a-z]/.test(slug) ? slug : `mcp-${slug}`.slice(0, 64);
-}
-
-/** The host's mapRegistryServer() acceptance test, in miniature. */
-function mapsToEntry(server) {
-  const packages = Array.isArray(server.packages) ? server.packages : [];
-  const npm = packages.find((p) => String(p?.registryType ?? '').toLowerCase() === 'npm' && p?.identifier);
-  if (npm) return 'stdio';
-  const pypi = packages.find((p) => String(p?.registryType ?? '').toLowerCase() === 'pypi' && p?.identifier);
-  if (pypi) return 'stdio';
-  const remote = (server.remotes ?? []).find(
-    (r) => String(r?.type ?? '').toLowerCase() === 'streamable-http' && /^https:\/\//.test(r?.url ?? ''),
-  );
-  if (remote) return 'http';
-  return null;
-}
-
 /** The host filters hits again locally; a hit that fails this wastes a page slot. */
 function passesLocalFilter(server, query) {
   const q = query.trim().toLocaleLowerCase();
   return [server?.title, server?.description, server?.name]
     .filter(Boolean)
     .some((t) => t.toLocaleLowerCase().includes(q));
+}
+
+/** The host's real mapper, used as the acceptance test for every record. */
+function clientEntry(record) {
+  return mapRegistryServer(record);
 }
 
 async function main() {
@@ -116,7 +97,11 @@ async function main() {
   check('server.name present', typeof first?.server?.name === 'string', first?.server?.name);
   check('server.description is Chinese', /[\u4e00-\u9fff]/.test(first?.server?.description ?? ''));
   check('server.title present', !!first?.server?.title, first?.server?.title);
-  check('first records are installable', !!mapsToEntry(first.server));
+  check('name carries the zh marker', /^zh\//.test(first?.server?.name ?? ''), first?.server?.name);
+
+  const firstEntry = clientEntry(first);
+  check('first record is accepted by the host mapper', !!firstEntry, firstEntry ? `id=${firstEntry.id}` : 'host returned null');
+  check('derived id starts with zh-', /^zh-/.test(firstEntry?.id ?? ''), firstEntry?.id);
 
   // ---- 3. pagination -----------------------------------------------------
   console.log('\n3) pagination (cursor walk)');
@@ -142,11 +127,14 @@ async function main() {
     }
     const body = JSON.parse(r.text);
     for (const rec of body.servers) {
-      const id = registryIdFromName(rec.server.name);
-      ids.push(id);
-      if (seen.has(id)) dupes += 1;
-      seen.add(id);
-      if (!mapsToEntry(rec.server)) unmappable += 1;
+      const entry = clientEntry(rec);
+      if (!entry) {
+        unmappable += 1;
+        continue;
+      }
+      ids.push(entry.id);
+      if (seen.has(entry.id)) dupes += 1;
+      seen.add(entry.id);
     }
     pages += 1;
     cursor = body.metadata?.nextCursor;
@@ -156,9 +144,10 @@ async function main() {
   check('no duplicate ids across pages', dupes === 0, `${dupes} dupes`);
   check('all ids unique', new Set(ids).size === ids.length, `${new Set(ids).size}/${ids.length}`);
   check('every id matches host regex', ids.every((i) => /^[a-z][a-z0-9_-]{0,63}$/.test(i)));
+  check('every id carries the zh prefix', ids.every((i) => i.startsWith('zh-')), `${ids.length} checked`);
   check('page size stays under cap', maxBytes < MAX_SOURCE_RESPONSE_BYTES, `max ${(maxBytes / 1024).toFixed(1)} KB`);
   check('slowest page under timeout', maxMs < TIMEOUT_MS, `max ${maxMs}ms`);
-  check('browsed pages are all installable', unmappable === 0, `${unmappable} unmappable`);
+  check('browsed records are all installable', unmappable === 0, `${unmappable} unmappable`);
   console.log(`     (${pages} pages in ${((Date.now() - t0) / 1000).toFixed(1)}s)`);
 
   // ---- 4. search ---------------------------------------------------------
@@ -178,9 +167,10 @@ async function main() {
     const body = JSON.parse(r.text);
     const hits = body.servers ?? [];
     const literal = hits.every((rec) => passesLocalFilter(rec.server, q));
-    const ok = hits.length > 0 && literal;
+    const showable = hits.every((rec) => !!clientEntry(rec));
+    const ok = hits.length > 0 && literal && showable;
     if (!ok) searchFailures += 1;
-    check(`search "${q}"`, ok, `${hits.length} hits, ${r.ms}ms, survives local filter=${literal}`);
+    check(`search "${q}"`, ok, `${hits.length} hits, ${r.ms}ms, localFilter=${literal}, showable=${showable}`);
   }
 
   // Single CJK character takes the LIKE path, not the FTS path.
@@ -193,6 +183,31 @@ async function main() {
     check(`single char "${q}"`, r.status === 200 && hits.length > 0 && literal, `${hits.length} hits`);
   }
 
+  // A search that pages with a cursor must not repeat or skip rows.
+  console.log('\n   search pagination');
+  const searchSeen = new Set();
+  let searchCursor = null;
+  let searchPages = 0;
+  let searchDupes = 0;
+  while (searchPages < 4) {
+    const url = searchCursor
+      ? `${BASE}/servers?version=latest&search=${encodeURIComponent('数据')}&limit=50&cursor=${encodeURIComponent(searchCursor)}`
+      : `${BASE}/servers?version=latest&search=${encodeURIComponent('数据')}&limit=50`;
+    const r = await get(url);
+    const body = JSON.parse(r.text);
+    for (const rec of body.servers ?? []) {
+      const entry = clientEntry(rec);
+      const id = entry?.id ?? rec.server.name;
+      if (searchSeen.has(id)) searchDupes += 1;
+      searchSeen.add(id);
+    }
+    searchPages += 1;
+    searchCursor = body.metadata?.nextCursor;
+    if (!searchCursor) break;
+  }
+  check('search paging works', searchPages >= 2, `${searchPages} pages, ${searchSeen.size} hits`);
+  check('search paging has no duplicates', searchDupes === 0, `${searchDupes} dupes`);
+
   const none = await get(`${BASE}/servers?version=latest&search=${encodeURIComponent('zzzqqqxxx不存在')}&limit=20`);
   check('nonsense query returns 0 hits', (JSON.parse(none.text).servers ?? []).length === 0);
   check('all search queries behaved', searchFailures === 0, `${searchFailures} failures`);
@@ -202,8 +217,8 @@ async function main() {
   const sample = JSON.parse((await get(`${BASE}/servers?version=latest&limit=10`)).text);
   for (const rec of sample.servers) {
     const s = rec.server;
-    const t = mapsToEntry(s);
-    console.log(`   ${t ? '[' + t.padEnd(5) + ']' : '[--]'} ${s.title}`);
+    const t = clientEntry(rec);
+    console.log(`   ${t ? '[' + t.transport.padEnd(5) + ']' : '[--]'} ${s.title}`);
     console.log(`            ${(s.description ?? '').slice(0, 84)}`);
   }
 

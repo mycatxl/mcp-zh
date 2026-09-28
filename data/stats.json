@@ -1,31 +1,42 @@
 {
-  "generatedAt": "2026-09-28T11:38:28.603Z",
-  "entries": 36881,
-  "installable": 34294,
-  "unmappable": 2587,
-  "duplicateIds": 7,
+  "generatedAt": "2026-09-28T14:10:42.511Z",
+  "rawRecords": 36888,
+  "entries": 34279,
+  "dropped": 2599,
+  "dropReasons": {
+    "no installable package or public https remote": 2599
+  },
+  "duplicateIds": 10,
   "duplicateExamples": [
+    "ai.getvda/llm-observability-orchestration-agent-langchain-community  ==  ai.getvda/llm-observability-orchestration-agent-langchain",
+    "ai.getvda/rabbitmq-elasticsearch-postgres-stack-generator-mongo  ==  ai.getvda/rabbitmq-elasticsearch-postgres-stack-generator-elasticsearch-elasticsearch",
+    "com.a2awire/benchmark-ap-exception-review-2026-09-10-run-037bea  ==  com.a2awire/benchmark-ap-exception-review-2026-09-10-ad46e3f1",
+    "com.a2awire/benchmark-ap-exception-review-2026-09-10-run-13e274  ==  com.a2awire/benchmark-ap-exception-review-2026-09-10-ad46e3f1",
+    "com.trycloudflare.candy-josh-writers-balance/yultrace-bounty-feed  ==  com.trycloudflare.candy-josh-writers-balance/yultrace-audit",
     "io.github.Clocknext/mcp  ==  io.github.ClockNext/mcp",
-    "io.github.LocalSynapse/localsynapse-mcp  ==  io.github.LocalSynapse/LocalSynapse-mcp",
     "io.github.Zuga-luga/zugabot  ==  io.github.Zuga-luga/Zugabot",
     "io.github.aggrete/aggrete  ==  io.github.Aggrete/aggrete",
     "io.github.dfch/biz.dfch.specmgr  ==  io.github.dfch/biz-dfch-specmgr",
-    "io.github.sceneview/mcp  ==  io.github.SceneView/mcp",
-    "io.github.silbercue/silbercueswift  ==  io.github.Silbercue/silbercueswift"
+    "io.github.sceneview/mcp  ==  io.github.SceneView/mcp"
   ],
-  "withTitle": 36881,
-  "withDescription": 36881,
+  "withoutTitle": 0,
+  "withoutDescription": 0,
   "categories": {
-    "devtools": 25642,
-    "web": 5716,
-    "productivity": 3365,
-    "data": 1725,
-    "docs": 433
+    "devtools": 23807,
+    "web": 5356,
+    "productivity": 3112,
+    "data": 1582,
+    "docs": 422
   },
-  "servedBytes": 33849389,
-  "avgBytesPerRecord": 918,
-  "responseBytesPerPage": 91800,
+  "servedBytes": 31021877,
+  "avgBytesPerRecord": 905,
+  "responseBytesPerPage": 90500,
   "statementBytesCap": 92160,
+  "writes": {
+    "estimated": 36519,
+    "dailyBudget": 100000,
+    "ftsShadowRows": 2240
+  },
   "translation": {
     "hit": 57039,
     "miss": 0,
