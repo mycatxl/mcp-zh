@@ -7,7 +7,7 @@
  * Does everything between "I have a Cloudflare account" and "here is the URL to
  * paste into the market", and is safe to re-run:
  *
- *   1. checks wrangler is installed and logged in (opens a browser if not)
+ *   1. resolves credentials — an API token if present, otherwise OAuth login
  *   2. creates the D1 database, or reuses it if it already exists
  *   3. writes its id into worker/wrangler.toml
  *   4. applies the schema
@@ -17,12 +17,33 @@
  * Re-running re-applies the schema (which drops and recreates the two tables) and
  * re-imports, so it doubles as the update path.
  *
- * RUN IT WITH `node`, NOT `npm run`. On Windows the `npm` command is a PowerShell
- * shim (`npm.ps1`) that the default execution policy refuses to run, so
- * `npm install` / `npm run deploy:all` fail with "running scripts is disabled on
- * this system" before any of this code is reached. Invoking node directly sidesteps
- * that entirely, and the npm scripts remain for machines where npm works.
+ * ---------------------------------------------------------------------------
+ * TWO WAYS TO AUTHENTICATE
  *
+ *   A) CLOUDFLARE_API_TOKEN in the environment. Non-interactive, no browser.
+ *      Create one at  My Profile -> API Tokens -> Create Token -> "Edit
+ *      Cloudflare Workers" template (it includes D1 access). Then either:
+ *
+ *          $env:CLOUDFLARE_API_TOKEN = "..."      # this shell only
+ *          setx CLOUDFLARE_API_TOKEN "..."        # persistent (new shells)
+ *
+ *      On Windows the token is ALSO read straight from HKCU\Environment when it
+ *      is not in this process's environment block. That matters because a
+ *      long-running app (PI-Desktop, an IDE, a terminal that was already open)
+ *      keeps the environment it was started with, so a `setx` afterwards is
+ *      invisible to process.env but perfectly readable from the registry.
+ *
+ *   B) `wrangler login` — opens a browser, you click Authorize, done. Nothing to
+ *      copy. The temporary localhost:8976 callback server that wrangler starts
+ *      for this exists only during those seconds; it is not part of the deployed
+ *      service and disappears as soon as the token is stored.
+ *
+ * RUN IT WITH `node`, NOT `npm run`. On Windows `npm` is a PowerShell shim
+ * (`npm.ps1`) that the default execution policy refuses to run, so `npm install`
+ * and `npm run deploy:all` fail with "running scripts is disabled on this system"
+ * before any of this code is reached.
+ *
+ * ---------------------------------------------------------------------------
  * HOW THE IMPORT ACTUALLY WORKS, and why the file size is not a problem:
  * `wrangler d1 execute --file --remote` does not split the SQL and fire it off
  * statement by statement. It md5s the file, asks D1 to initialise an import, PUTs
@@ -40,11 +61,12 @@
  *
  * Flags:
  *   --skip-import     schema + deploy only (use when data is already loaded)
- *   --login-only      just authorise with Cloudflare, then stop
+ *   --login-only      resolve credentials, report status, then stop
+ *   --check           report what would happen, change nothing
  *   --db=<name>       D1 database name (default mcp-zh)
  *   --worker=<name>   Worker name (default mcp-zh-registry)
  */
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -74,6 +96,7 @@ const DB_NAME = arg('db', 'mcp-zh');
 const WORKER_NAME = arg('worker', 'mcp-zh-registry');
 const SKIP_IMPORT = has('skip-import');
 const LOGIN_ONLY = has('login-only');
+const CHECK_ONLY = has('check');
 
 function step(n, text) {
   console.log(`\n[${n}] ${text}`);
@@ -85,13 +108,50 @@ function fail(text, hint) {
   process.exit(1);
 }
 
+/**
+ * Read a user-scope environment variable on Windows.
+ *
+ * A process cannot see variables set after it started, so a `setx` performed
+ * while PI-Desktop (or any long-running shell) is open never reaches process.env.
+ * The registry value is still current, so it is read directly.
+ */
+function readUserEnv(name) {
+  if (!isWindows) return null;
+  try {
+    const out = execFileSync(
+      'powershell',
+      ['-NoProfile', '-NonInteractive', '-Command',
+        `[Environment]::GetEnvironmentVariable('${name}','User')`],
+      { encoding: 'utf8', timeout: 20000 },
+    );
+    const v = out.trim();
+    return v ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+// ------------------------------------------------------------------ token ----
+const TOKEN = (() => {
+  const fromEnv = process.env.CLOUDFLARE_API_TOKEN?.trim();
+  if (fromEnv) return { value: fromEnv, source: 'process environment' };
+  const fromRegistry = readUserEnv('CLOUDFLARE_API_TOKEN');
+  if (fromRegistry) return { value: fromRegistry, source: 'HKCU\\Environment' };
+  return null;
+})();
+
+/** Wrangler must see the token in ITS environment, not just ours. */
+const CHILD_ENV = TOKEN
+  ? { ...process.env, CLOUDFLARE_API_TOKEN: TOKEN.value, WRANGLER_SEND_METRICS: 'false' }
+  : { ...process.env, WRANGLER_SEND_METRICS: 'false' };
+
 /** Run wrangler through node directly, so the npm shim is never involved. */
 function wrangler(args, { capture = false, allowFail = false } = {}) {
   const res = spawnSync(process.execPath, [WRANGLER_BIN, ...args], {
     cwd: WORKER,
     encoding: 'utf8',
     stdio: capture ? 'pipe' : 'inherit',
-    env: process.env,
+    env: CHILD_ENV,
   });
   if (res.error) throw res.error;
   if (res.status !== 0 && !allowFail) {
@@ -112,9 +172,7 @@ step(0, 'checking prerequisites');
 if (!fs.existsSync(WRANGLER_BIN)) {
   fail(
     'wrangler is not installed (node_modules is missing or incomplete)',
-    isWindows
-      ? `run:  ${NPM} install     (npm.ps1 is blocked by the PowerShell execution policy, so use ${NPM})`
-      : `run:  ${NPM} install`,
+    `run:  ${NPM} install     (npm.ps1 is blocked by the PowerShell execution policy, so use ${NPM})`,
   );
 }
 
@@ -132,42 +190,84 @@ console.log(`  wrangler    : ${WRANGLER_BIN.replace(ROOT + path.sep, '')}`);
 console.log(`  import file : ${importMb.toFixed(1)} MB${stats ? `  (${stats.entries.toLocaleString()} entries)` : ''}`);
 console.log(`  database    : ${DB_NAME}`);
 console.log(`  worker      : ${WORKER_NAME}`);
+console.log(
+  `  credentials : ${TOKEN ? `API token from ${TOKEN.source} (ends …${TOKEN.value.slice(-4)})` : 'none — will use OAuth login'}`,
+);
 
 // ------------------------------------------------------------------ 1. login
-step(1, 'checking Cloudflare login');
-const who = wrangler(['whoami'], { capture: true, allowFail: true });
-const loggedIn = who.code === 0 && !/not authenticated|You are not logged in|not logged in/i.test(who.out);
+step(1, 'resolving Cloudflare credentials');
 
-if (!loggedIn) {
-  console.log('  not logged in.');
-  console.log('');
-  console.log('  A FREE Cloudflare account is enough — no credit card, no payment method.');
-  console.log('  If you do not have one yet, the browser page that opens has a Sign up link.');
-  console.log('');
-  console.log('  Now opening the browser to authorise wrangler…');
-  console.log('  (if no browser opens, copy the URL that is printed below into one)');
-  console.log('');
+let authed = false;
+{
+  const who = wrangler(['whoami'], { capture: true, allowFail: true });
+  const out = who.out;
 
-  const login = wrangler(['login'], { allowFail: true });
-  if (login.code !== 0) {
-    fail(
-      'wrangler login did not complete',
-      're-run this script, or run `node node_modules/wrangler/bin/wrangler.js login` yourself',
-    );
+  if (who.code === 0 && !/not authenticated|not logged in/i.test(out)) {
+    authed = true;
+    const line = out.split('\n').map((l) => l.trim()).find((l) => l && !l.includes('⛅') && !l.includes('─'));
+    console.log(`  ${line ?? 'authenticated'}`);
+    if (/API Token/i.test(out)) console.log('  (authenticated via API token)');
+  } else if (TOKEN) {
+    // A token is present but rejected — say so precisely instead of falling back
+    // to a browser prompt that would only confuse things.
+    const detail = out.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('🪵') && !l.includes('⛅'));
+    console.error('  the API token was rejected by Cloudflare:');
+    for (const l of detail.slice(0, 6)) console.error(`    ${l}`);
+    console.error('');
+    console.error('  common causes:');
+    console.error('    - the token was copied incompletely or has whitespace');
+    console.error('    - the token lacks the "Edit Cloudflare Workers" permission (needed for D1)');
+    console.error('    - the token was deleted or expired in the dashboard');
+    console.error('');
+    console.error('  fix or remove it, then re-run:');
+    console.error('    setx CLOUDFLARE_API_TOKEN ""          (to clear it)');
+    process.exit(1);
+  } else {
+    console.log('  no API token, and not logged in.');
+    console.log('');
+    console.log('  A FREE Cloudflare account is enough — no credit card, no payment method.');
+    console.log('  If you do not have one yet, the page that opens has a Sign up link.');
+    console.log('');
+    console.log('  Opening the browser to authorise wrangler…');
+    console.log('  (the localhost:8976 callback server wrangler starts here exists only');
+    console.log('   for these few seconds, to receive the authorisation code. It has');
+    console.log('   nothing to do with the deployed service, which runs on Cloudflare.)');
+    console.log('');
+
+    if (CHECK_ONLY) {
+      console.log('  --check: would run `wrangler login` here. Stopping.');
+      process.exit(0);
+    }
+
+    const login = wrangler(['login'], { allowFail: true });
+    if (login.code !== 0) {
+      console.log('');
+      console.log('  `wrangler login` did not complete.');
+      console.log('');
+      console.log('  If the browser could not reach this machine (remote shell, container),');
+      console.log('  use the device flow instead — it prints a short code to type in the');
+      console.log('  browser, and needs no callback to localhost:');
+      console.log('');
+      console.log('    node node_modules/wrangler/bin/wrangler.js login --device');
+      console.log('');
+      console.log('  Or create an API token and set it (no browser at all):');
+      console.log('    setx CLOUDFLARE_API_TOKEN "..."');
+      process.exit(1);
+    }
+
+    const again = wrangler(['whoami'], { capture: true, allowFail: true });
+    if (again.code !== 0 || /not authenticated/i.test(again.out)) {
+      fail('still not logged in after `wrangler login`');
+    }
+    authed = true;
+    console.log(`  ${again.out.trim().split('\n').filter(Boolean).pop()}`);
   }
-
-  const again = wrangler(['whoami'], { capture: true, allowFail: true });
-  if (again.code !== 0 || /not authenticated/i.test(again.out)) {
-    fail('still not logged in after `wrangler login`');
-  }
-  console.log(`  ${again.out.trim().split('\n').filter(Boolean).pop()}`);
-} else {
-  const line = who.out.split('\n').find((l) => l.trim() && !l.includes('⛅')) ?? 'ok';
-  console.log(`  ${line.trim()}`);
 }
 
+if (!authed) fail('credentials could not be resolved');
+
 if (LOGIN_ONLY) {
-  console.log('\n--login-only: stopping here.');
+  console.log('\n--login-only: credentials are ready, stopping here.');
   process.exit(0);
 }
 
@@ -191,6 +291,11 @@ if (list.code === 0) {
   }
 }
 
+if (!databaseId && CHECK_ONLY) {
+  console.log(`  --check: would create database "${DB_NAME}". Stopping.`);
+  process.exit(0);
+}
+
 if (!databaseId) {
   console.log('  creating…');
   const created = wrangler(['d1', 'create', DB_NAME], { capture: true });
@@ -212,6 +317,11 @@ const next = toml
 if (!/database_id\s*=\s*"/.test(next)) fail('wrangler.toml has no database_id line to fill in');
 fs.writeFileSync(TOML, next, 'utf8');
 console.log(`  database_id = ${databaseId}`);
+
+if (CHECK_ONLY) {
+  console.log('\n--check: everything above was a dry run; stopping before any writes.');
+  process.exit(0);
+}
 
 // ----------------------------------------------------------------- 4. schema
 step(4, 'applying schema (drops and recreates the two tables)');

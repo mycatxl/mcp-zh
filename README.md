@@ -15,44 +15,77 @@ URL   https://mcp-zh-registry.<你的子域>.workers.dev/servers
 
 ## 部署
 
-### Windows 用户注意：先看这一条
+### Windows 用户先看这一条
 
 这台机器上 PowerShell 的执行策略**禁止运行 `npm.ps1`**，所以 `npm install` 和 `npm run ...` 会直接失败，报 `running scripts is disabled on this system`。
 
-**用 `npm.cmd` 代替 `npm`**，或者干脆用 `node` 直接跑脚本（推荐，最省事）：
+**用 `node` 直接跑脚本**（最省事），或者把 `npm` 换成 `npm.cmd`。依赖已经装好了，通常不需要再 install。
+
+### 授权方式二选一
+
+| | 方式 | 需要做什么 |
+|---|---|---|
+| **A** | **API Token**（推荐，无需浏览器） | 去面板建一个 token，设成环境变量 |
+| **B** | **OAuth 登录** | 跑命令，浏览器点一下 Authorize |
+
+#### 方式 A：API Token（不弹浏览器）
+
+1. 打开 https://dash.cloudflare.com/profile/api-tokens
+2. **Create Token** → 用 **"Edit Cloudflare Workers"** 模板（它已包含 D1 权限）
+3. 创建后**复制 token**（只显示一次）
+4. 设成环境变量：
+
+```powershell
+setx CLOUDFLARE_API_TOKEN "你的token"
+```
+
+然后直接跑部署：
 
 ```powershell
 cd D:\WorkSpace\Chat\mcp-zh-registry
-
-npm.cmd install          # 注意是 npm.cmd，不是 npm
-node scripts/deploy.mjs  # 用 node 直接跑，完全绕开 npm
-```
-
-### 然后就是这一条命令
-
-```powershell
 node scripts/deploy.mjs
 ```
 
-它会依次做完，每步都打印进度：
+> **为什么 `setx` 就够了**：Windows 上脚本会**直接从注册表 `HKCU\Environment` 读取**这个变量。
+> 因为长时间运行的程序（PI-Desktop、IDE、已开着的终端）保留的是启动时的环境块，
+> 之后 `setx` 设的变量在 `process.env` 里看不到，但注册表里是最新的。
+> 这条路径已实测（`node test/env-token.js`，7 项断言）。
+
+#### 方式 B：OAuth 登录（点一下浏览器）
+
+```powershell
+cd D:\WorkSpace\Chat\mcp-zh-registry
+node scripts/deploy.mjs
+```
+
+没登录时它会自动打开浏览器。Cloudflare 账号**免费、不用绑卡**，没账号就在打开的页面上点 Sign up。
+
+> **关于 `localhost:8976`**：这是 wrangler 为了接收授权码而**临时**起的本地回调口，
+> 只在授权的那几秒存在，拿到凭据立刻关闭。**它和部署后的服务毫无关系** ——
+> 部署产物里没有任何 localhost，服务跑在 Cloudflare 边缘节点上，你关机网友照样能用。
+>
+> 如果浏览器够不到本机（远程 shell、容器），用设备码模式，不需要回调到本机：
+> ```powershell
+> node node_modules/wrangler/bin/wrangler.js login --device
+> ```
+
+### 脚本会做什么
 
 | 步骤 | 做什么 |
 |---|---|
 | 0 | 检查 wrangler 装了没、`data/import.sql` 在不在 |
-| 1 | 检查 Cloudflare 登录；没登录就**自动打开浏览器**让你授权 |
+| 1 | 解析凭据：有 token 就用 token，否则走 OAuth |
 | 2 | 创建 D1 数据库（已存在就复用） |
 | 3 | 把数据库 id 写进 `worker/wrangler.toml` |
 | 4 | 建表（会 drop 重建两张表） |
 | 5 | 导入 43.5 MB 全量数据，读回**真实写入行数**核对额度 |
 | 6 | 部署 Worker，**打印出要填进市场的 URL** |
 
-可重复执行，也兼作更新流程。Cloudflare 账号**免费、不用绑卡**。
+可重复执行，也兼作更新流程。
 
-### 你要做的只有两步
+### 填进市场
 
-**第一步**：跑上面那条命令。没登录的话浏览器会自动打开 Cloudflare 授权页 —— 没账号就点页面上的 Sign up 注册一个（免费）。授权完回到终端，脚本会自己继续跑完。
-
-**第二步**：把最后打印的那行 URL 填进市场：
+把最后打印的那行 URL 填进市场：
 
 ```
 MCP 市场 → 源管理 → 添加源
@@ -60,7 +93,7 @@ MCP 市场 → 源管理 → 添加源
   类型  registry
 ```
 
-**注意**：不要填 `/v0/servers`，也不要漏掉 `/servers` 后缀。
+**注意**：要带 `/servers` 后缀，不要写成 `/v0/servers`。
 
 ### 导入到底是怎么跑的（为什么 43 MB 不是问题）
 
@@ -78,10 +111,11 @@ MCP 市场 → 源管理 → 添加源
 ### 常用参数
 
 ```powershell
-node scripts/deploy.mjs --skip-import   # 只建表+部署，不导数据
-node scripts/deploy.mjs --login-only    # 只登录 Cloudflare，别的都不做
-node scripts/deploy.mjs --db=my-db      # 换个数据库名
-node scripts/deploy.mjs --worker=my-zh  # 换个 Worker 名（决定 URL 前缀）
+node scripts/deploy.mjs --check          # 干跑：只报告会做什么，不改任何东西
+node scripts/deploy.mjs --login-only     # 只解决授权，别的都不做
+node scripts/deploy.mjs --skip-import    # 只建表+部署，不导数据
+node scripts/deploy.mjs --db=my-db       # 换个数据库名
+node scripts/deploy.mjs --worker=my-zh   # 换个 Worker 名（决定 URL 前缀）
 ```
 
 ### 部署后自检
@@ -247,7 +281,8 @@ node generator/check-id-collision.js  # id 撞车检查
 node generator/check-served.js        # 客户端可见性检查
 node test/limits.js                   # D1 硬限制预检
 node test/host-mapper.js              # 宿主映射函数单元测试
-node test/deploy-parse.js             # 部署脚本自检
+node test/deploy-parse.js             # 部署脚本自检（41 项）
+node test/env-token.js                # API token 路径自检（7 项）
 node test/e2e.js                      # 端到端（需 Worker 在 8788 跑）
 ```
 

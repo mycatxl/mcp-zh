@@ -173,6 +173,25 @@ console.log('\n7) deploy script invariants');
   check('verifies FTS was populated', /FTS blocks|search index is empty/.test(src));
 }
 
+// ---- 8. the API-token path --------------------------------------------
+// A token is the non-interactive alternative to the browser login, and on Windows
+// it must be read from HKCU\Environment when process.env cannot see it: a
+// long-running app keeps the environment block it was started with, so a setx
+// performed afterwards never reaches process.env.
+console.log('\n8) API-token path');
+{
+  const src = fs.readFileSync(path.join(ROOT, 'scripts', 'deploy.mjs'), 'utf8');
+  check('reads CLOUDFLARE_API_TOKEN from the environment', /process\.env\.CLOUDFLARE_API_TOKEN/.test(src));
+  check('falls back to the registry read', /readUserEnv\(.CLOUDFLARE_API_TOKEN.\)/.test(src));
+  check('reads the User scope specifically', /GetEnvironmentVariable\(.\$\{name\}.,.User.\)/.test(src));
+  check('injects the token into the child environment', /CLOUDFLARE_API_TOKEN:\s*TOKEN\.value/.test(src));
+  check('never prints the whole token', /slice\(-4\)/.test(src) && !/console\.(log|error)\([^)]*TOKEN\.value\)/.test(src));
+  check('diagnoses a rejected token instead of silently prompting', /token was rejected by Cloudflare/.test(src));
+  check('names the required permission', /Edit Cloudflare Workers/.test(src));
+  check('offers the device flow when the callback is unreachable', /--device/.test(src));
+  check('has a dry-run mode', /--check/.test(src) && /CHECK_ONLY/.test(src));
+}
+
 console.log('\n--------------------------------------------');
 console.log(`PASS ${pass}   FAIL ${fail}`);
 process.exit(fail === 0 ? 0 : 1);
