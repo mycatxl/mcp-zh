@@ -1,0 +1,65 @@
+{
+  "generatedAt": "2026-09-28T13:33:44.641Z",
+  "hostCapBytes": 4194304,
+  "budgetBytes": 3774873,
+  "parts": [
+    {
+      "file": "mcp-zh-01.json",
+      "entries": 11610,
+      "bytes": 3774879,
+      "invalid": 0,
+      "stdio": 2919,
+      "http": 8691,
+      "categories": {
+        "devtools": 7290,
+        "web": 2182,
+        "productivity": 1134,
+        "data": 657,
+        "docs": 347
+      }
+    },
+    {
+      "file": "mcp-zh-02.json",
+      "entries": 7444,
+      "bytes": 3774845,
+      "invalid": 0,
+      "stdio": 5284,
+      "http": 2160,
+      "categories": {
+        "devtools": 5119,
+        "web": 1292,
+        "productivity": 662,
+        "data": 371
+      }
+    },
+    {
+      "file": "mcp-zh-03.json",
+      "entries": 10422,
+      "bytes": 3772784,
+      "invalid": 0,
+      "stdio": 3892,
+      "http": 6530,
+      "categories": {
+        "devtools": 8237,
+        "web": 1037,
+        "productivity": 808,
+        "data": 340
+      }
+    },
+    {
+      "file": "mcp-zh-04.json",
+      "entries": 4823,
+      "bytes": 1827396,
+      "invalid": 0,
+      "stdio": 1867,
+      "http": 2956,
+      "categories": {
+        "devtools": 3174,
+        "web": 848,
+        "productivity": 508,
+        "data": 218,
+        "docs": 75
+      }
+    }
+  ]
+}

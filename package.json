@@ -1,27 +1,28 @@
 {
   "name": "mcp-zh-registry",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "A Chinese-translated mirror of the official MCP registry, served through the same paginated registry protocol so PI-Desktop's MCP market can consume it as a custom source.",
+  "description": "A Chinese-translated mirror of the official MCP registry. Ships as static catalog files in git (no server needed) and optionally as a Cloudflare Worker speaking the same paginated registry protocol.",
   "scripts": {
     "fetch": "node generator/step1-fetch.js",
-    "sample": "node generator/step0-sample.js",
-    "translate": "node generator/step2-translate.js",
-    "sql": "node generator/step3-sql.js",
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "db:init": "wrangler d1 execute mcp-zh --file=generator/lib/schema.sql --remote",
-    "test": "node --test test/"
+    "sample": "node generator/step2-sample.js",
+    "translate": "node generator/step3-sql.js",
+    "sql": "node generator/step3-sql.js --chunk=8000",
+    "catalog": "node generator/build-catalog.js",
+    "measure": "node generator/measure-catalog.js",
+    "update": "node generator/update.js",
+    "verify": "node generator/step4-verify.js",
+    "test": "node test/catalog.js && node test/e2e.js",
+    "test:catalog": "node test/catalog.js",
+    "test:e2e": "node test/e2e.js",
+    "dev": "wrangler dev --local",
+    "deploy": "wrangler deploy"
   },
   "engines": {
     "node": ">=22.5"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"
-  },
-  "allowScripts": {
-    "esbuild@0.28.1": true,
-    "workerd@1.20260926.1": true
   }
 }
