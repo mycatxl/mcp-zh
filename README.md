@@ -13,16 +13,54 @@ URL   https://mcp-zh-registry.<你的子域>.workers.dev/servers
 
 ---
 
-## 部署（一条命令）
+## 部署
 
-```bash
-npm install
+### Windows 用户注意：先看这一条
+
+这台机器上 PowerShell 的执行策略**禁止运行 `npm.ps1`**，所以 `npm install` 和 `npm run ...` 会直接失败，报 `running scripts is disabled on this system`。
+
+**用 `npm.cmd` 代替 `npm`**，或者干脆用 `node` 直接跑脚本（推荐，最省事）：
+
+```powershell
+cd D:\WorkSpace\Chat\mcp-zh-registry
+
+npm.cmd install          # 注意是 npm.cmd，不是 npm
+node scripts/deploy.mjs  # 用 node 直接跑，完全绕开 npm
+```
+
+### 然后就是这一条命令
+
+```powershell
 node scripts/deploy.mjs
 ```
 
-脚本会自动：检查登录 → 创建 D1 数据库 → 回填 `wrangler.toml` → 建表 → 导入全量数据 → 部署 Worker → **打印出要填进市场的 URL**。
+它会依次做完，每步都打印进度：
 
-可重复执行，也兼作更新流程。没有 Cloudflare 账号时会自动打开浏览器让你注册（免费，不用绑卡）。
+| 步骤 | 做什么 |
+|---|---|
+| 0 | 检查 wrangler 装了没、`data/import.sql` 在不在 |
+| 1 | 检查 Cloudflare 登录；没登录就**自动打开浏览器**让你授权 |
+| 2 | 创建 D1 数据库（已存在就复用） |
+| 3 | 把数据库 id 写进 `worker/wrangler.toml` |
+| 4 | 建表（会 drop 重建两张表） |
+| 5 | 导入 43.5 MB 全量数据，读回**真实写入行数**核对额度 |
+| 6 | 部署 Worker，**打印出要填进市场的 URL** |
+
+可重复执行，也兼作更新流程。Cloudflare 账号**免费、不用绑卡**。
+
+### 你要做的只有两步
+
+**第一步**：跑上面那条命令。没登录的话浏览器会自动打开 Cloudflare 授权页 —— 没账号就点页面上的 Sign up 注册一个（免费）。授权完回到终端，脚本会自己继续跑完。
+
+**第二步**：把最后打印的那行 URL 填进市场：
+
+```
+MCP 市场 → 源管理 → 添加源
+  URL   https://mcp-zh-registry.xxxxx.workers.dev/servers
+  类型  registry
+```
+
+**注意**：不要填 `/v0/servers`，也不要漏掉 `/servers` 后缀。
 
 ### 导入到底是怎么跑的（为什么 43 MB 不是问题）
 
@@ -32,10 +70,32 @@ node scripts/deploy.mjs
 
 - 43 MB 一次性上传，**不会**因为体积失败
 - 整个导入是**单个事务**，失败会回滚到导入前的状态，**可以安全重试**
-- 真正适用的硬限制只有**单条语句 100 KB** 和**单行 2 MB**。`npm run test:limits` 会拿生成的 SQL 逐条核对这两项 —— 因为超限报的是 `SQLITE_TOOBIG`，而那是在上传**之后**才发生的
-- **导入期间数据库对外不可用**，所以这是手动步骤，而不是让 CI 每天自动跑
+- 真正适用的硬限制只有**单条语句 100 KB** 和**单行 2 MB**。`node test/limits.js` 会拿生成的 SQL 逐条核对这两项 —— 因为超限报的是 `SQLITE_TOOBIG`，而那是在上传**之后**才发生的
+- **导入期间数据库对外不可用**（通常 1-3 分钟），所以这是手动步骤，而不是让 CI 每天自动跑
 
-脚本会读回导入报告里的**真实 `rows written`**，和我的推算对比，超额度会直接报错退出。
+脚本会读回导入报告里的**真实 `rows written`**，和推算对比，超额度会直接报错退出。
+
+### 常用参数
+
+```powershell
+node scripts/deploy.mjs --skip-import   # 只建表+部署，不导数据
+node scripts/deploy.mjs --login-only    # 只登录 Cloudflare，别的都不做
+node scripts/deploy.mjs --db=my-db      # 换个数据库名
+node scripts/deploy.mjs --worker=my-zh  # 换个 Worker 名（决定 URL 前缀）
+```
+
+### 部署后自检
+
+```powershell
+# 健康检查：应该看到 entries: 34279
+curl https://mcp-zh-registry.xxxxx.workers.dev/health
+
+# 拿 2 条看看中文
+curl "https://mcp-zh-registry.xxxxx.workers.dev/servers?version=latest&limit=2"
+
+# 搜个中文词
+curl "https://mcp-zh-registry.xxxxx.workers.dev/servers?version=latest&search=数据库&limit=3"
+```
 
 ---
 
@@ -173,21 +233,27 @@ test/
 
 ## 命令
 
-```bash
-npm run build         # 翻译 + 生成 import.sql
-npm run verify        # 真实 SQLite 全量验证
-npm run check:all     # id 撞车 + 客户端可见性 + D1 限制预检
-npm run summary       # 打印当前数据摘要
-npm run test          # 全部检查（单元 + 预检 + 全量 + 端到端）
-npm run dev           # 本地 wrangler dev（端口 8788）
-npm run deploy:all    # 一键部署
-```
+Windows 上把 `npm` 换成 `npm.cmd`；或者全部用 `node` 直接跑，更省事。
 
-`npm run test` 需要本地已有 D1 数据且 Worker 在 8788 上跑（`test:e2e` 会连它）。只跑离线部分用 `npm run test:unit` 和 `npm run check:all`。
+```powershell
+npm.cmd install        # 装依赖（wrangler）
+
+node scripts/deploy.mjs   # 一键部署 ← 你只需要这条
+node scripts/summary.mjs --text   # 看当前数据摘要
+
+node generator/step3-sql.js       # 翻译 + 生成 import.sql
+node generator/step4-verify.js    # 真实 SQLite 全量验证
+node generator/check-id-collision.js  # id 撞车检查
+node generator/check-served.js        # 客户端可见性检查
+node test/limits.js                   # D1 硬限制预检
+node test/host-mapper.js              # 宿主映射函数单元测试
+node test/deploy-parse.js             # 部署脚本自检
+node test/e2e.js                      # 端到端（需 Worker 在 8788 跑）
+```
 
 ## 更新数据
 
-```bash
+```powershell
 node generator/update.js        # 重新抓取（约 19 分钟）
 node generator/step3-sql.js     # 只翻译新增的（有缓存，秒级）
 node scripts/deploy.mjs         # 重新导入 + 部署
@@ -201,9 +267,9 @@ node scripts/deploy.mjs         # 重新导入 + 部署
 
 宿主的接收规则是本项目镜像的协议的一部分，升级后重新提取并跑检查：
 
-```bash
+```powershell
 node generator/extract-host-mapper.js --bundle=<app.asar 解出的 main/index.js>
-npm run check:served
+node generator/check-served.js
 ```
 
 提取器会在报告成功前对生成的文件做语法检查，因为一个被截断的定义会生成"看起来合理"但一 import 就崩的文件。

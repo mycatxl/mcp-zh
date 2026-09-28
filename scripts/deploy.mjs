@@ -2,12 +2,12 @@
 /**
  * One-command deploy.
  *
- *   npm run deploy:all
+ *   node scripts/deploy.mjs
  *
  * Does everything between "I have a Cloudflare account" and "here is the URL to
  * paste into the market", and is safe to re-run:
  *
- *   1. checks wrangler is logged in (opens a browser if not)
+ *   1. checks wrangler is installed and logged in (opens a browser if not)
  *   2. creates the D1 database, or reuses it if it already exists
  *   3. writes its id into worker/wrangler.toml
  *   4. applies the schema
@@ -16,6 +16,12 @@
  *
  * Re-running re-applies the schema (which drops and recreates the two tables) and
  * re-imports, so it doubles as the update path.
+ *
+ * RUN IT WITH `node`, NOT `npm run`. On Windows the `npm` command is a PowerShell
+ * shim (`npm.ps1`) that the default execution policy refuses to run, so
+ * `npm install` / `npm run deploy:all` fail with "running scripts is disabled on
+ * this system" before any of this code is reached. Invoking node directly sidesteps
+ * that entirely, and the npm scripts remain for machines where npm works.
  *
  * HOW THE IMPORT ACTUALLY WORKS, and why the file size is not a problem:
  * `wrangler d1 execute --file --remote` does not split the SQL and fire it off
@@ -34,6 +40,7 @@
  *
  * Flags:
  *   --skip-import     schema + deploy only (use when data is already loaded)
+ *   --login-only      just authorise with Cloudflare, then stop
  *   --db=<name>       D1 database name (default mcp-zh)
  *   --worker=<name>   Worker name (default mcp-zh-registry)
  */
@@ -48,9 +55,14 @@ const WORKER = path.join(ROOT, 'worker');
 const TOML = path.join(WORKER, 'wrangler.toml');
 const IMPORT_SQL = path.join(ROOT, 'data', 'import.sql');
 const SCHEMA_SQL = path.join(ROOT, 'generator', 'lib', 'schema.sql');
+const WRANGLER_BIN = path.join(ROOT, 'node_modules', 'wrangler', 'bin', 'wrangler.js');
 
 /** D1 free tier, for the write-budget report. */
 const DAILY_WRITE_BUDGET = 100000;
+
+const isWindows = process.platform === 'win32';
+/** On Windows `npm` is blocked by the execution policy; the .cmd shim is not. */
+const NPM = isWindows ? 'npm.cmd' : 'npm';
 
 function arg(name, fallback) {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
@@ -61,14 +73,21 @@ const has = (name) => process.argv.includes(`--${name}`);
 const DB_NAME = arg('db', 'mcp-zh');
 const WORKER_NAME = arg('worker', 'mcp-zh-registry');
 const SKIP_IMPORT = has('skip-import');
+const LOGIN_ONLY = has('login-only');
 
-/**
- * Run wrangler. On Windows, `npx` is a .ps1 shim that the default execution
- * policy blocks, so the binary is invoked directly instead.
- */
+function step(n, text) {
+  console.log(`\n[${n}] ${text}`);
+}
+
+function fail(text, hint) {
+  console.error(`\n  ERROR  ${text}`);
+  if (hint) console.error(`         ${hint}`);
+  process.exit(1);
+}
+
+/** Run wrangler through node directly, so the npm shim is never involved. */
 function wrangler(args, { capture = false, allowFail = false } = {}) {
-  const bin = path.join(ROOT, 'node_modules', 'wrangler', 'bin', 'wrangler.js');
-  const res = spawnSync(process.execPath, [bin, ...args], {
+  const res = spawnSync(process.execPath, [WRANGLER_BIN, ...args], {
     cwd: WORKER,
     encoding: 'utf8',
     stdio: capture ? 'pipe' : 'inherit',
@@ -85,18 +104,19 @@ function wrangler(args, { capture = false, allowFail = false } = {}) {
   return { code: res.status, out: `${res.stdout ?? ''}${res.stderr ?? ''}` };
 }
 
-function step(n, text) {
-  console.log(`\n[${n}] ${text}`);
-}
-
-function fail(text, hint) {
-  console.error(`\n  ERROR  ${text}`);
-  if (hint) console.error(`         ${hint}`);
-  process.exit(1);
-}
-
 // ---------------------------------------------------------------- 0. preflight
 step(0, 'checking prerequisites');
+
+// Check this FIRST: without it, every later step fails with a confusing
+// "failed with exit code 1" instead of saying what is actually missing.
+if (!fs.existsSync(WRANGLER_BIN)) {
+  fail(
+    'wrangler is not installed (node_modules is missing or incomplete)',
+    isWindows
+      ? `run:  ${NPM} install     (npm.ps1 is blocked by the PowerShell execution policy, so use ${NPM})`
+      : `run:  ${NPM} install`,
+  );
+}
 
 if (!fs.existsSync(IMPORT_SQL) && !SKIP_IMPORT) {
   fail(
@@ -108,6 +128,7 @@ const importMb = fs.existsSync(IMPORT_SQL) ? fs.statSync(IMPORT_SQL).size / 1048
 const stats = fs.existsSync(path.join(ROOT, 'data', 'stats.json'))
   ? JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'stats.json'), 'utf8'))
   : null;
+console.log(`  wrangler    : ${WRANGLER_BIN.replace(ROOT + path.sep, '')}`);
 console.log(`  import file : ${importMb.toFixed(1)} MB${stats ? `  (${stats.entries.toLocaleString()} entries)` : ''}`);
 console.log(`  database    : ${DB_NAME}`);
 console.log(`  worker      : ${WORKER_NAME}`);
@@ -115,16 +136,39 @@ console.log(`  worker      : ${WORKER_NAME}`);
 // ------------------------------------------------------------------ 1. login
 step(1, 'checking Cloudflare login');
 const who = wrangler(['whoami'], { capture: true, allowFail: true });
-if (who.code !== 0 || /not authenticated|You are not logged in/i.test(who.out)) {
-  console.log('  not logged in — opening the browser to authorise wrangler.');
-  console.log('  (a free Cloudflare account is enough; no payment method is needed)');
-  wrangler(['login']);
+const loggedIn = who.code === 0 && !/not authenticated|You are not logged in|not logged in/i.test(who.out);
+
+if (!loggedIn) {
+  console.log('  not logged in.');
+  console.log('');
+  console.log('  A FREE Cloudflare account is enough — no credit card, no payment method.');
+  console.log('  If you do not have one yet, the browser page that opens has a Sign up link.');
+  console.log('');
+  console.log('  Now opening the browser to authorise wrangler…');
+  console.log('  (if no browser opens, copy the URL that is printed below into one)');
+  console.log('');
+
+  const login = wrangler(['login'], { allowFail: true });
+  if (login.code !== 0) {
+    fail(
+      'wrangler login did not complete',
+      're-run this script, or run `node node_modules/wrangler/bin/wrangler.js login` yourself',
+    );
+  }
+
   const again = wrangler(['whoami'], { capture: true, allowFail: true });
-  if (again.code !== 0) fail('still not logged in after `wrangler login`');
-  console.log(`  ${again.out.trim().split('\n').pop()}`);
+  if (again.code !== 0 || /not authenticated/i.test(again.out)) {
+    fail('still not logged in after `wrangler login`');
+  }
+  console.log(`  ${again.out.trim().split('\n').filter(Boolean).pop()}`);
 } else {
-  const line = who.out.split('\n').find((l) => l.trim()) ?? 'ok';
+  const line = who.out.split('\n').find((l) => l.trim() && !l.includes('⛅')) ?? 'ok';
   console.log(`  ${line.trim()}`);
+}
+
+if (LOGIN_ONLY) {
+  console.log('\n--login-only: stopping here.');
+  process.exit(0);
 }
 
 // --------------------------------------------------------------- 2. database
