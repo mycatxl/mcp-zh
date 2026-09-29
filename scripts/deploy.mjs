@@ -40,7 +40,7 @@
  *
  * RUN IT WITH `node`, NOT `npm run`. On Windows `npm` is a PowerShell shim
  * (`npm.ps1`) that the default execution policy refuses to run, so `npm install`
- * and `npm run deploy:all` fail with "running scripts is disabled on this system"
+ * and `npm run deploy:local` fail with "running scripts is disabled on this system"
  * before any of this code is reached.
  *
  * ---------------------------------------------------------------------------
@@ -353,6 +353,31 @@ if (LOGIN_ONLY) {
 
 // --------------------------------------------------------------- 2. database
 //
+// --cloud assumes Cloudflare already provisioned and bound the database. On a
+// checkout that has never deployed, database_id is still the placeholder and
+// the binding points at nothing — wrangler then fails deep in its own output
+// with a message that says nothing about the actual mistake. Say it here.
+//
+// A dry run reports it and still exits 0, because --check exists to tell you
+// what would happen, not to refuse to tell you.
+const PLACEHOLDER_DB_ID = '00000000-0000-0000-0000-000000000000';
+if (CLOUD) {
+  const boundId = /^\s*database_id\s*=\s*"([^"]+)"/m.exec(fs.readFileSync(TOML, 'utf8'))?.[1];
+  if (!boundId || boundId === PLACEHOLDER_DB_ID) {
+    const hint =
+      'wrangler.toml still carries the placeholder database_id.\n' +
+      '         Drop --cloud to look the database up (and create it when missing):\n' +
+      '           node scripts/deploy.mjs';
+    if (CHECK_ONLY) {
+      console.log('\n  NOTE  --cloud cannot work on this checkout:');
+      console.log(`        ${hint}`);
+      console.log('\n--check: stopping before any writes.');
+      process.exit(0);
+    }
+    fail('--cloud expects a database that Cloudflare has already provisioned and bound', hint);
+  }
+}
+
 // In --cloud mode the database already exists and is already bound: Cloudflare
 // created it while setting up the Deploy to Cloudflare button, and rewrote
 // database_id in wrangler.toml itself. Looking it up by NAME would break the
@@ -415,12 +440,23 @@ if (CLOUD) {
     .replace(/^name\s*=\s*".*"$/m, `name = "${WORKER_NAME}"`)
     .replace(/^(database_id\s*=\s*)".*"$/m, `$1"${databaseId}"`);
   if (!/database_id\s*=\s*"/.test(next)) fail('wrangler.toml has no database_id line to fill in');
-  fs.writeFileSync(TOML, next, 'utf8');
-  console.log(`  database_id = ${databaseId}`);
+
+  // The write has to sit INSIDE the dry-run guard. It used to happen first and
+  // the guard came after, so `--check` — documented as leaving everything
+  // untouched — wrote the real database id into a tracked file, which is
+  // exactly the account-specific value the template repository must never
+  // carry. Caught by test/seed.js, which asserts the placeholder is still
+  // there on a checkout that has never deployed.
+  if (CHECK_ONLY) {
+    console.log(`  --check: would set database_id = ${databaseId}`);
+  } else {
+    fs.writeFileSync(TOML, next, 'utf8');
+    console.log(`  database_id = ${databaseId}`);
+  }
 }
 
 if (CHECK_ONLY) {
-  console.log('\n--check: everything above was a dry run; stopping before any writes.');
+  console.log('\n--check: everything above was a dry run; no files were written.');
   process.exit(0);
 }
 

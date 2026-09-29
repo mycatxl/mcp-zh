@@ -47,7 +47,7 @@
     "deploy": "node scripts/deploy.mjs --cloud",
     "seed": "node scripts/seed.mjs",
 
-    "deploy:all": "node scripts/deploy.mjs",
+    "deploy:local": "node scripts/deploy.mjs",
     "deploy:check": "node scripts/deploy.mjs --check"
   },
   "engines": {

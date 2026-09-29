@@ -17,6 +17,7 @@
  *   node test/seed.js
  */
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
@@ -213,6 +214,14 @@ console.log('\n6) deploy.mjs --cloud uses the binding, not the name');
   // A browser prompt inside a build container hangs until the job times out
   // and reports nothing useful, so cloud mode has to fail fast instead.
   check('cloud mode cannot fall through to a browser login', /--cloud never opens a browser/.test(src));
+
+  // --cloud on a checkout that has never deployed would address a binding that
+  // points at nothing and die somewhere inside wrangler's own output. It has to
+  // say what is actually wrong, and a dry run still has to exit 0.
+  check('cloud mode refuses a placeholder database id', /PLACEHOLDER_DB_ID/.test(src));
+  check('...and names the command that would work', /Drop --cloud to look the database up/.test(src));
+  check('...while a dry run still reports and exits 0', /NOTE {2}--cloud cannot work on this checkout/.test(src));
+  check('the placeholder id it compares against is the all-zero one', /PLACEHOLDER_DB_ID = '0{8}-0{4}-0{4}-0{4}-0{12}'/.test(src));
   check(
     'every d1 execute uses the binding',
     (src.match(/d1',\s*'execute',\s*DB_BINDING/g) ?? []).length >= 2 &&
@@ -235,6 +244,47 @@ console.log('\n7) wrangler invocations still work from the repository root');
   check('wrangler runs from the root, where the config now is', /cwd: ROOT,/.test(src));
   check('the config path is the root one', /const TOML = path\.join\(ROOT, 'wrangler\.toml'\)/.test(src));
   check('no stale WORKER path variable', !/\bconst WORKER = /.test(src));
+}
+
+// ---- 8. a dry run must not write anything -------------------------------
+// `--check` is documented as "report what would happen, change nothing". It
+// used to write wrangler.toml and only THEN test the flag, so a dry run on a
+// template checkout stamped somebody's account-specific database id into a
+// tracked file — the exact thing the placeholder assertion above guards
+// against. Structure is the point: the write has to live in the else-branch of
+// a CHECK_ONLY test, not before it.
+console.log('\n8) --check does not write wrangler.toml');
+{
+  const src = read('scripts/deploy.mjs');
+  const writeAt = src.indexOf('fs.writeFileSync(TOML');
+  const guardAt = writeAt === -1 ? -1 : src.lastIndexOf('if (CHECK_ONLY) {', writeAt);
+  // The write must sit in that guard's else-branch.
+  const elseAt = guardAt === -1 ? -1 : src.indexOf('} else {', guardAt);
+
+  check('the config is written somewhere', writeAt !== -1);
+  check('a dry-run guard precedes the write', guardAt !== -1);
+  check(
+    'the write is in the guard else-branch, not before it',
+    guardAt !== -1 && elseAt !== -1 && guardAt < elseAt && elseAt < writeAt,
+    'a guard that runs after the write is not a guard',
+  );
+  check('the dry run reports what it would have written', /--check: would set database_id/.test(src));
+  check('and says nothing was written', /no files were written/.test(src));
+
+  // Behavioural backstop. It holds in every environment: if credentials are
+  // missing the run stops earlier, and if they are present it reaches the write
+  // and must still not perform it.
+  const tomlPath = path.join(ROOT, 'wrangler.toml');
+  const before = fs.readFileSync(tomlPath);
+  try {
+    execFileSync(process.execPath, ['scripts/deploy.mjs', '--check'], { cwd: ROOT, stdio: 'pipe' });
+  } catch {
+    /* stopping early is fine; writing is not */
+  }
+  check(
+    'running --check left wrangler.toml byte-identical',
+    before.equals(fs.readFileSync(tomlPath)),
+  );
 }
 
 console.log('\n--------------------------------------------');

@@ -25,13 +25,15 @@ Cloudflare 会自动创建 D1 数据库、导入 34,279 条中文数据、部署
 ### 本机部署
 
 ```bash
-npm run build     # 取数据集：本地已有则跳过，否则下载 7.8 MB 并校验
-npm run deploy    # 建表 → 导入 → 部署
+npm run build        # 取数据集：本地已有则跳过，否则下载 7.8 MB 并校验
+npm run deploy:local # 建库 → 建表 → 导入 → 部署
 ```
 
-需要先 `wrangler login`，或设置 `CLOUDFLARE_API_TOKEN`（用 **Edit Cloudflare Workers** 模板创建）。
+用这个的前提：已 `wrangler login`，或设了 `CLOUDFLARE_API_TOKEN`（用 **Edit Cloudflare Workers** 模板创建）。
 
-> **Windows**：PowerShell 默认禁止 `npm.ps1`，把 `npm` 换成 `npm.cmd`。
+> **不要在本机跑 `npm run deploy`** —— 那是给 Cloudflare 一键部署用的（`--cloud`）：它假定数据库已经建好并绑定，本机跑会因为没有数据库而停下。名字必须叫 `deploy`，因为 Cloudflare 就是用这个名字自动预填它的部署命令。
+
+> **Windows**：PowerShell 默认禁止 `npm.ps1`，把 `npm` 换成 `npm.cmd`。或者直接用 `node scripts/deploy.mjs`，绕开 npm。`
 
 ---
 

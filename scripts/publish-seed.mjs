@@ -247,5 +247,5 @@ console.log(`  published ${manifest.entries?.toLocaleString() ?? '?'} entries`);
 console.log(`  ${seedUrl}`);
 console.log('\n  Anyone can now deploy a populated registry from a fresh clone:');
 console.log('    npm run build   # downloads and verifies the seed');
-console.log('    npm run deploy  # schema, import, wrangler deploy');
+console.log('    npm run deploy:local  # schema, import, wrangler deploy');
 console.log('============================================================');
