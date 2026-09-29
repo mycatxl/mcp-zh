@@ -145,6 +145,20 @@ console.log('\n6) the committed snippet file matches the generator');
   }
 }
 
+// ---- the --url flag ------------------------------------------------------
+// The deployed URL is only recorded when a deploy runs on this machine. A
+// one-click deploy runs in Cloudflare's checkout, which never pushes
+// project.json back, so the repository copy has no URL and the generator would
+// refuse to run for the person who most needs it.
+console.log('\nsource: the --url override');
+{
+  const src = fs.readFileSync(path.join(ROOT, 'scripts', 'make-snippet.mjs'), 'utf8');
+  check('accepts --url', /--url=/.test(src));
+  check('trims trailing slashes', /replace\(\/\\\/\+\$\/, ''\)/.test(src));
+  check('appends /servers when only the origin is given', /!\/\\\/servers\$\/\.test\(URL_\)/.test(src));
+  check('rejects anything that is not an https /servers endpoint', /expected something like/.test(src));
+}
+
 console.log('\n--------------------------------------------');
 console.log(`PASS ${pass}   FAIL ${fail}`);
 process.exit(fail === 0 ? 0 : 1);

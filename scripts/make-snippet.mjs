@@ -18,8 +18,15 @@
  * All of that is verified against the host's own extracted function in
  * test/source-snippet.js. This script only emits the code; the test proves it.
  *
- *   node scripts/make-snippet.mjs            # print it
- *   node scripts/make-snippet.mjs --write    # also write docs/console-snippet.txt
+ *   node scripts/make-snippet.mjs                        # print it
+ *   node scripts/make-snippet.mjs --write                # also write docs/console-snippet.txt
+ *   node scripts/make-snippet.mjs --url=https://…        # for a deployment project.json does not know
+ *
+ * --url exists because the deployed URL is only recorded when a deploy runs
+ * HERE. Cloudflare's build checkout writes project.json inside its own
+ * workspace and never pushes it back, so after a one-click deploy the
+ * repository copy still has no URL and this script would refuse to run. The
+ * flag is for exactly that case.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -28,14 +35,25 @@ import { loadProject, sourceUrl, OFFICIAL_SOURCE, ROOT } from './lib/project.mjs
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT = loadProject();
-const URL_ = sourceUrl(PROJECT);
+
+const urlArg = process.argv.find((a) => a.startsWith('--url='));
+let URL_ = urlArg ? urlArg.slice('--url='.length).trim() : sourceUrl(PROJECT);
+if (URL_) URL_ = URL_.replace(/\/+$/, '');
+// Accept the bare Worker origin as well as the full /servers endpoint, because
+// the dashboard shows the origin and the market needs the endpoint.
+if (URL_ && !/\/servers$/.test(URL_)) URL_ = `${URL_}/servers`;
 
 if (!URL_) {
-  console.error('project.json has no publicUrl yet — deploy first:');
-  console.error('  node scripts/deploy.mjs');
+  console.error('no URL — project.json has no publicUrl, and no --url was given.');
   console.error('');
-  console.error('That writes the deployed URL back into project.json, and this script');
-  console.error('then generates a snippet pointing at the real endpoint.');
+  console.error('Either deploy from this machine (which records the URL), or pass it:');
+  console.error('  node scripts/make-snippet.mjs --url=https://mcp-zh.<your-subdomain>.workers.dev');
+  process.exit(1);
+}
+
+if (!/^https:\/\/[\w.-]+\/servers$/.test(URL_)) {
+  console.error(`that does not look like a registry endpoint: ${URL_}`);
+  console.error('expected something like https://mcp-zh.example.workers.dev/servers');
   process.exit(1);
 }
 
