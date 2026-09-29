@@ -281,6 +281,11 @@ const COMMON_SHORT = [
 
 // Generated from the corpus; lists words that are ordinary vocabulary rather
 // than part of a brand. See generator/build-word-stats.js.
+//
+// The generator must NOT read this file back while measuring the corpus. It
+// used to import nameTokens() to do that, which is a cycle through this import,
+// and the failure was silent and self-reinforcing — see the note in the
+// generator for the measurement that came out of it.
 import { CORPUS_GENERIC } from './word-stats.generated.js';
 export const GENERIC_WORDS = new Set([...TRANSPORT, ...GENERIC_NOUNS, ...COMMON_SHORT].map((w) => w.toLowerCase()));
 

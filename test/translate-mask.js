@@ -135,6 +135,14 @@ console.log('\n7) the generated word set');
   // The generator regenerates this file from data/raw.jsonl, which CI has and a
   // fresh clone does not — so the committed copy must not be empty.
   const src = fs.readFileSync(path.join(ROOT, 'generator', 'build-word-stats.js'), 'utf8');
+  // The generator refuses to overwrite this file with a tiny set, because a
+  // silently empty set strips brand protection from every string. Check that
+  // the committed copy is still the healthy one.
+  check('the word set is not empty or degraded', CORPUS_GENERIC.size > 1000, `${CORPUS_GENERIC.size} words`);
+  check('it still holds words known to be ordinary', CORPUS_GENERIC.has('changes') && CORPUS_GENERIC.has('signals'));
+  check('it still holds no known brand', !CORPUS_GENERIC.has('propick') && !CORPUS_GENERIC.has('agentutility'));
+  const build = fs.readFileSync(path.join(ROOT, 'generator', 'build-word-stats.js'), 'utf8');
+  check('the generator refuses to write a degraded set', /refusing to write a word set this small/.test(build));
   check('the generator exists and documents its rule', /df >= 5|MIN_DF/.test(src) && /nameCount/.test(src));
 }
 

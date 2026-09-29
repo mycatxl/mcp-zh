@@ -45,7 +45,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { nameTokens, GENERIC_WORDS } from './lib/glossary-words.js';
+import { GENERIC_WORDS } from './lib/glossary-words.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -66,11 +66,30 @@ if (!fs.existsSync(RAW)) {
   process.exit(1);
 }
 
-const df = new Map(); // word -> how many records' prose contains it
-const nameCount = new Map(); // word -> how many records' name contains it
+/**
+ * df — how many records' PROSE contains the word.
+ *
+ * Deliberately every word of the title and description, not just the words that
+ * also appear in a name. Step 3 decides protection per record with
+ * `isOrdinaryWord()`, which tests the word against this same set, so the two
+ * have to be counted the same way or the decision is made on a different corpus
+ * than the one published.
+ *
+ * It also has to be countable without asking anything else. The first version
+ * counted only `nameTokens(name)` and imported `nameTokens` from
+ * lib/glossary-words.js — which reads the file this script writes. That import
+ * is a cycle, and the failure was silent and self-reinforcing: with an empty
+ * word set loaded, every ordinary word counts as a brand token, so its
+ * nameCount grows to match its df, `df >= 2 * nameCount + 3` fails, and the
+ * script wrote an even smaller set. Measured: it wrote an EMPTY one, which
+ * removes brand protection from all 57k strings.
+ */
+const df = new Map();
+/** nameCount — how many records' NAME contains the word. */
+const nameCount = new Map();
 let docs = 0;
 
-const rl = readline.createInterface({ input: fs.createReadStream(RAW), crlfDelay: Infinity });
+const rl = readline.createInterface({ input: fs.createReadStream(RAW, { encoding: 'utf8' }), crlfDelay: Infinity });
 for await (const line of rl) {
   if (!line.trim()) continue;
   let rec;
@@ -84,12 +103,19 @@ for await (const line of rl) {
 
   // One vote per record, so a record that repeats a word 40 times counts once.
   const seen = new Set();
-  for (const w of `${s.title ?? ''} ${s.description ?? ''}`.toLowerCase().match(/[a-z][a-z0-9]{2,}/g) ?? []) {
-    seen.add(w);
-  }
+  for (const w of `${s.title ?? ''} ${s.description ?? ''}`.toLowerCase().match(/[a-z][a-z0-9]{2,}/g) ?? []) seen.add(w);
   for (const w of seen) df.set(w, (df.get(w) ?? 0) + 1);
 
-  for (const t of nameTokens(s.name)) {
+  // Name tokens by exactly the rule nameTokens() uses — same separators, same
+  // length floor, same character class. If these drift apart, the statistics
+  // describe a different token set than the one protection actually consults,
+  // and a word can be released here while still being protected there (or vice
+  // versa). The rules are duplicated rather than shared because the real
+  // function filters with isOrdinaryWord(), which reads the file this script
+  // writes.
+  for (const t of String(s.name ?? '').split(/[/.@_-]+/)) {
+    if (t.length < 3) continue;
+    if (!/^[A-Za-z][A-Za-z0-9]*$/.test(t)) continue;
     const k = t.toLowerCase();
     nameCount.set(k, (nameCount.get(k) ?? 0) + 1);
   }
@@ -107,6 +133,19 @@ const isOrdinary = (w) => {
 // happens not to use much (it is full of transport/tooling vocabulary).
 const corpusGeneric = new Set();
 for (const t of nameCount.keys()) if (isOrdinary(t)) corpusGeneric.add(t);
+
+// A0. SANITY GUARD. This file is regenerated and COMMITTED by CI on every
+// refresh, and step3 trusts whatever it says. Writing an empty (or tiny) word
+// set therefore does not fail — it silently removes brand protection from all
+// 57k strings and re-translates them with brands mangled ("JustIdea" -> 正意).
+// One run did produce exactly that before this guard existed, and the summary
+// step would have committed it. Refusing to write is the only safe failure
+// mode: the previous good file stays in place and CI's exit code 1 is the alarm.
+if (docs < 1000 || corpusGeneric.size < MIN_DF * 100) {
+  console.error(`refusing to write a word set this small: ${corpusGeneric.size} words from ${docs} records`);
+  console.error('expected at least a few thousand; check data/raw.jsonl and the thresholds above');
+  process.exit(1);
+}
 
 const handKept = [...GENERIC_WORDS].filter((w) => !corpusGeneric.has(w));
 
