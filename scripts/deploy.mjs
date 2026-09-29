@@ -55,6 +55,13 @@
  * generated file, because a statement over the limit fails with SQLITE_TOOBIG
  * only after the upload has already happened.
  *
+ * The schema and the data therefore travel in ONE file. They used to be two
+ * separate `d1 execute` calls, which is a genuine hazard: the schema DROPs both
+ * tables, so any failure between the two calls leaves the live marketplace
+ * serving from an empty database — and the most likely failure is exactly the
+ * one that hits after the DROP, the daily write limit. Concatenating them makes
+ * the DROP, the CREATEs and every INSERT one transaction.
+ *
  * The database is UNAVAILABLE to serve queries while the import runs, which is
  * why this is a deliberate manual step rather than something the daily workflow
  * does on a cron.
@@ -83,6 +90,8 @@ const ROOT = path.resolve(HERE, '..');
 const TOML = path.join(ROOT, 'wrangler.toml');
 const IMPORT_SQL = path.join(ROOT, 'data', 'import.sql');
 const SCHEMA_SQL = path.join(ROOT, 'generator', 'lib', 'schema.sql');
+/** Schema + data, concatenated for a single all-or-nothing import. */
+const BUNDLE_SQL = path.join(ROOT, 'data', 'import-bundle.sql');
 const WRANGLER_BIN = path.join(ROOT, 'node_modules', 'wrangler', 'bin', 'wrangler.js');
 
 /**
@@ -518,16 +527,37 @@ if (reimport && CLOUD && !FORCE && localHash) {
   }
 }
 
+/** Row counts straight from D1, or null when the query cannot be read. */
+function d1Counts() {
+  const res = wrangler(
+    ['d1', 'execute', DB_BINDING, '--remote', '--json', '--command',
+      'SELECT (SELECT COUNT(*) FROM servers) AS entries, (SELECT COUNT(*) FROM search_data) AS fts'],
+    { capture: true, allowFail: true },
+  );
+  if (res.code !== 0) return null;
+  try {
+    const parsed = JSON.parse(res.out.slice(res.out.indexOf('[')));
+    const row = parsed?.[0]?.results?.[0];
+    return row ? { entries: Number(row.entries), fts: Number(row.fts) } : null;
+  } catch {
+    return null;
+  }
+}
+
 if (!reimport) {
   step(4, `schema and import skipped (${skipReason})`);
   console.log('  the database is left exactly as it is');
 } else {
-  step(4, 'applying schema (drops and recreates the two tables)');
-  wrangler(['d1', 'execute', DB_BINDING, '--remote', `--file=${SCHEMA_SQL}`, '-y']);
-  console.log('  schema applied');
+  step(4, 'bundling the schema and the data into one import');
+  // See the header: two separate calls would let a failed import land between
+  // the DROP and the INSERTs, leaving an empty marketplace behind.
+  fs.writeFileSync(
+    BUNDLE_SQL,
+    `${fs.readFileSync(SCHEMA_SQL, 'utf8')}\n${fs.readFileSync(IMPORT_SQL, 'utf8')}`,
+  );
+  console.log(`  ${(fs.statSync(BUNDLE_SQL).size / 1048576).toFixed(1)} MB, schema first, then every row`);
 
-  step(5, `importing ${importMb.toFixed(1)} MB into D1`);
-  step(5, `importing ${importMb.toFixed(1)} MB into D1`);
+  step(5, `importing ${importMb.toFixed(1)} MB into D1 (schema included)`);
   if (stats?.writes) {
     const pct = ((stats.writes.estimated / DAILY_WRITE_BUDGET) * 100).toFixed(0);
     console.log(
@@ -536,15 +566,36 @@ if (!reimport) {
     );
   }
   console.log('  the database is unavailable while this runs — usually 1-3 minutes.');
-  console.log('  the import is a single transaction, so a failure rolls back and is safe to retry.');
+  console.log('  it is ONE transaction, so a failure rolls back to the data already published.');
 
   // Captured rather than streamed, because the summary line carries the REAL
   // rows-written count — the only way to confirm the write-budget estimate
   // against what Cloudflare actually charged.
-  const imported = wrangler(['d1', 'execute', DB_BINDING, '--remote', `--file=${IMPORT_SQL}`, '-y'], {
+  const imported = wrangler(['d1', 'execute', DB_BINDING, '--remote', `--file=${BUNDLE_SQL}`, '-y'], {
     capture: true,
+    allowFail: true,
   });
   process.stdout.write(imported.out);
+  fs.rmSync(BUNDLE_SQL, { force: true });
+
+  if (imported.code !== 0) {
+    const counts = d1Counts();
+    const spent = /(exceeded|reached).{0,40}(daily|limit|quota)|daily (write|row)|rows written/i.test(imported.out);
+    fail(
+      spent
+        ? 'D1 refused the import: the daily write limit is spent'
+        : 'the import did not complete',
+      `${
+        counts
+          ? `the database still serves ${counts.entries.toLocaleString()} entries — the transaction rolled back`
+          : 'could not read the row count back — check the database before retrying'
+      }\n         ${
+        spent
+          ? 'the limit resets at 00:00 UTC; the next build imports the new dataset. Nothing was lost.'
+          : 'the previous data is intact; re-run when the cause is fixed.'
+      }`,
+    );
+  }
 
   const wrote = /(\d[\d,]*)\s+rows written/i.exec(imported.out);
   if (wrote) {
@@ -568,20 +619,12 @@ if (!reimport) {
   }
 
   // Read the count back through a separate query, not just the import's own report.
-  const check = wrangler(
-    ['d1', 'execute', DB_BINDING, '--remote', '--json', '--command',
-      'SELECT (SELECT COUNT(*) FROM servers) AS entries, (SELECT COUNT(*) FROM search_data) AS fts'],
-    { capture: true },
-  );
-  try {
-    const parsed = JSON.parse(check.out.slice(check.out.indexOf('[')));
-    const row = parsed?.[0]?.results?.[0];
-    if (row) {
-      console.log(`  verified in D1: ${Number(row.entries).toLocaleString()} entries, ${row.fts} FTS blocks`);
-      if (Number(row.entries) === 0) fail('the servers table is empty after the import');
-      if (Number(row.fts) === 0) fail('the search index is empty', 'the import did not feed the FTS5 table');
-    }
-  } catch {
+  const row = d1Counts();
+  if (row) {
+    console.log(`  verified in D1: ${row.entries.toLocaleString()} entries, ${row.fts} FTS blocks`);
+    if (row.entries === 0) fail('the servers table is empty after the import');
+    if (row.fts === 0) fail('the search index is empty', 'the import did not feed the FTS5 table');
+  } else {
     console.log('  (could not parse the verification query; the import itself reported success)');
   }
 }

@@ -164,8 +164,18 @@ console.log('\n7) deploy script invariants');
 {
   const src = fs.readFileSync(path.join(ROOT, 'scripts', 'deploy.mjs'), 'utf8');
   // The import must be -y, or a CI/non-tty run hangs on the confirmation prompt.
-  check('import passes -y', /'execute',\s*DB_NAME,\s*'--remote',\s*`--file=\$\{IMPORT_SQL\}`,?\s*'-y'/.test(src) || /'-y'/.test(src));
-  check('schema passes -y', /'--file=\$\{SCHEMA_SQL\}',\s*'-y'/.test(src) || /'-y'/.test(src));
+  check('import passes -y', /'execute',\s*DB_BINDING,\s*'--remote',\s*`--file=\$\{BUNDLE_SQL\}`,?\s*'-y'/.test(src) || /'-y'/.test(src));
+  // Schema and data must travel in ONE file: two separate calls would let a
+  // failure land between the DROP and the INSERTs, leaving an empty database.
+  check('schema is bundled into the import, not run as its own call',
+    /BUNDLE_SQL/.test(src) &&
+      /readFileSync\(SCHEMA_SQL/.test(src) &&
+      /readFileSync\(IMPORT_SQL/.test(src));
+  check('no leftover separate schema call', !/--file=\$\{SCHEMA_SQL\}/.test(src));
+  check('the import is described as one transaction', /ONE transaction/.test(src));
+  check('a failed import is caught, not thrown', /imported\.code !== 0/.test(src));
+  check('rollback is verified against the live row count', /d1Counts\(\)/.test(src) && /rolled back/.test(src));
+  check('a spent write budget is named as such', /daily write limit is spent/.test(src));
   check('import output is captured (to read rows written)', /capture:\s*true/.test(src));
   check('warns about downtime', /unavailable/i.test(src));
   check('reports the real rows written', /rows written/i.test(src));
