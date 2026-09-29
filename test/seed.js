@@ -21,6 +21,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { loadProject, seedManifestUrl } from '../scripts/lib/project.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -51,7 +52,21 @@ console.log('1) repository layout the button depends on');
   const toml = read('wrangler.toml');
   check('declares the DB binding', /\[\[d1_databases\]\]/.test(toml) && /^\s*binding\s*=\s*"DB"$/m.test(toml));
   check('names the database', /^\s*database_name\s*=\s*"mcp-zh"$/m.test(toml));
-  check('ships a placeholder id so provisioning has something to replace', /database_id\s*=\s*"0{8}-0{4}-0{4}-0{4}-0{12}"/.test(toml));
+  // A real database id committed to a template repo would point every clone at
+  // somebody else's database, so the placeholder has to survive until this
+  // checkout has actually deployed. project.json's publicUrl is the signal for
+  // "has deployed", so a fork that has deployed is not nagged about it.
+  const placeholder = /database_id\s*=\s*"0{8}-0{4}-0{4}-0{4}-0{12}"/.test(toml);
+  const everDeployed = !!loadProject().publicUrl;
+  check(
+    'carries an id for provisioning to replace, and not one of ours',
+    placeholder || everDeployed,
+    placeholder
+      ? 'placeholder'
+      : everDeployed
+        ? 'real id, allowed: this checkout has deployed'
+        : 'committed a real database id without ever deploying',
+  );
 
   // `main` is resolved relative to the config file, so moving the config to the
   // root without fixing this would break the build.
@@ -87,7 +102,6 @@ console.log('\n2) package.json build/deploy are fresh-clone safe');
 // ---- 3. seed url and manifest derivation --------------------------------
 console.log('\n3) seed url -> manifest url');
 {
-  const { loadProject, seedManifestUrl } = await import('../scripts/lib/project.mjs');
   const project = loadProject();
 
   check('project.json carries a seed url', typeof project.seedUrl === 'string' && !!project.seedUrl, project.seedUrl);
