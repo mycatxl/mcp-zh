@@ -171,14 +171,22 @@ async function main() {
 
   const t0 = Date.now();
   const map = await translator.translateJobs(jobs, {
-    onProgress: ({ done, total, cacheSize }) => {
-      if (done % 5000 === 0 || done === total) process.stdout.write(`    ${done}/${total}  (cache ${cacheSize})\n`);
+    onProgress: ({ mode, done, total, cacheSize }) => {
+      if (done % 5000 === 0 || done === total) process.stdout.write(`    [${mode}] ${done}/${total}  (cache ${cacheSize})\n`);
     },
+    // Only a run over the whole dataset knows which entries are dead; a --limit
+    // run would throw away the rest of the cache.
+    prune: limit === Infinity,
   });
   const secs = (Date.now() - t0) / 1000;
+  const { routes } = translator.stats;
   console.log(
     `translated in ${secs.toFixed(0)}s | new ${translator.stats.miss} | cached ${translator.stats.hit} | ` +
       `requests ${translator.stats.requests} | failures ${translator.stats.failed}`,
+  );
+  console.log(
+    `routes       : english ${routes.en} | other language ${routes.auto} | chinese/kanji ${routes.han} | ` +
+      `detected as english ${translator.stats.detectedEnglish} | second chance ${translator.stats.secondChance}`,
   );
 
   // ---- build the rows -----------------------------------------------------

@@ -20,7 +20,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Translator } from './lib/translate.js';
+import { Translator, GLOBAL_BRANDS } from './lib/translate.js';
 import { GENERIC_WORDS, nameTokens } from './lib/glossary-words.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -53,6 +53,8 @@ const KEEP_LATIN = new Set([
   'chrome', 'firefox', 'safari', 'edge', 'linux', 'windows', 'macos', 'ubuntu', 'debian',
   'ios', 'android', 'web', 'app', 'server', 'client', 'host', 'cloud', 'data', 'file',
 ]);
+/** Product names the translator protects on purpose are not defects either. */
+const GLOBAL_LOWER = new Set(GLOBAL_BRANDS.map((b) => b.toLowerCase()));
 
 const raw = fs
   .readFileSync(path.join(DATA, 'raw.jsonl'), 'utf8')
@@ -67,7 +69,7 @@ const raw = fs
   })
   .filter(Boolean);
 
-// Same path as step3: build the job list, translate (cache only), map by text.
+// Same path as step3: build the job list and resolve it from the cache only.
 const translator = new Translator({ cachePath: path.join(DATA, 'translation-cache.json') });
 const jobs = [];
 for (const rec of raw) {
@@ -75,7 +77,7 @@ for (const rec of raw) {
   const extra = nameTokens(src.name);
   if (typeof src.title === 'string' && src.title.trim()) jobs.push({ text: src.title, extra });
 }
-const map = await translator.translateJobs(jobs, { onProgress: () => {} });
+const map = translator.resolveJobs(jobs);
 console.log(`translation map size: ${map.size.toLocaleString()}   (cache ${translator.cache.size.toLocaleString()})`);
 console.log('');
 
@@ -109,7 +111,7 @@ for (const rec of raw) {
 
   const latin = [...new Set((served.match(LATIN) ?? []).map((w) => w.toLowerCase()))];
   const suspicious = latin.filter(
-    (w) => w.length > 2 && !brands.has(w) && !KEEP_LATIN.has(w) && !GENERIC_WORDS?.has?.(w),
+    (w) => w.length > 2 && !brands.has(w) && !KEEP_LATIN.has(w) && !GLOBAL_LOWER.has(w) && !GENERIC_WORDS?.has?.(w),
   );
 
   if (!CJK.test(served)) {

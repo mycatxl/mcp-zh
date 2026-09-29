@@ -56,6 +56,18 @@ const raw = fs
   .filter(Boolean);
 
 const translator = useTranslations ? new Translator({ cachePath: path.join(DATA, 'translation-cache.json') }) : null;
+// Resolved exactly as step3 resolves them (routing, merged brand tokens), from
+// the cache only. Probing the cache by hand used to diverge from step3.
+let translated = null;
+if (translator) {
+  const jobs = [];
+  for (const rec of raw) {
+    const src = rec?.server ?? {};
+    const extra = nameTokens(src.name);
+    for (const text of [src.title, src.description]) if (typeof text === 'string' && text.trim()) jobs.push({ text, extra });
+  }
+  translated = translator.resolveJobs(jobs);
+}
 console.log(`records: ${raw.length.toLocaleString()}   text: ${useTranslations ? 'translated (production)' : 'ORIGINAL ENGLISH (diagnostic)'}`);
 console.log('');
 
@@ -88,13 +100,8 @@ for (const rec of raw) {
   stats.total += 1;
 
   // Same translation lookup step3 uses, so this measures the real output.
-  let titleZh = '';
-  let descZh = '';
-  if (translator) {
-    const extra = nameTokens(src.name);
-    if (typeof src.title === 'string' && src.title.trim()) titleZh = translator.cache.get(Translator.key(src.title, true, extra)) ?? '';
-    if (typeof src.description === 'string' && src.description.trim()) descZh = translator.cache.get(Translator.key(src.description, true, extra)) ?? '';
-  }
+  const titleZh = translated && typeof src.title === 'string' ? (translated.get(src.title) ?? '') : '';
+  const descZh = translated && typeof src.description === 'string' ? (translated.get(src.description) ?? '') : '';
 
   const built = buildServedRecord(rec, { titleZh, descZh });
 
