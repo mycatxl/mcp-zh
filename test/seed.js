@@ -77,8 +77,10 @@ console.log('1) repository layout the button depends on');
 
 // ---- 2. the two script names Cloudflare pre-fills ------------------------
 // Cloudflare pre-populates its build and deploy fields from these names, so a
+
 // `build` that needs a crawl is a build that fails for every new user.
 console.log('\n2) package.json build/deploy are fresh-clone safe');
+
 {
   const pkg = JSON.parse(read('package.json'));
   const build = pkg.scripts.build ?? '';
@@ -92,6 +94,20 @@ console.log('\n2) package.json build/deploy are fresh-clone safe');
   check('build prepares the seed', /scripts\/seed\.mjs/.test(build));
   check('deploy uses --cloud', /--cloud/.test(deploy));
   check('translation moved to its own script', /generator\/step3-sql\.js/.test(pkg.scripts.translate ?? ''));
+
+  // The deploy script needs wrangler at deploy time, and Cloudflare does not
+  // guarantee devDependencies are installed — `npm ci --omit=dev` skips them
+  // entirely, which would turn a one-click deploy into "wrangler is not
+  // found". Hence a real dependency rather than a dev one.
+  const lock = JSON.parse(read('package-lock.json'));
+  const lockRoot = lock.packages?.[''] ?? {};
+  check('wrangler is a runtime dependency, not a dev one', !!pkg.dependencies?.wrangler, pkg.dependencies?.wrangler);
+  check('wrangler is not in devDependencies', !pkg.devDependencies?.wrangler);
+  check(
+    'the lock file records it the same way',
+    lockRoot.dependencies?.wrangler === pkg.dependencies?.wrangler && !lockRoot.devDependencies?.wrangler,
+    'npm ci fails outright when the two disagree',
+  );
 
   // A build step that silently downloads 43 MB on a machine that already has
   // the data would be a nasty surprise, so seed.mjs has to no-op first. Checked

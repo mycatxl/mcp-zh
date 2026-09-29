@@ -83,6 +83,36 @@ const IMPORT_SQL = path.join(ROOT, 'data', 'import.sql');
 const SCHEMA_SQL = path.join(ROOT, 'generator', 'lib', 'schema.sql');
 const WRANGLER_BIN = path.join(ROOT, 'node_modules', 'wrangler', 'bin', 'wrangler.js');
 
+/**
+ * How to invoke wrangler, and what to report about it.
+ *
+ * The vendored copy is preferred: it is the one package-lock.json pins, and it
+ * is reached through node directly, which matters on Windows because the npm
+ * and npx shims are .cmd files that node cannot exec without a shell.
+ *
+ * Cloudflare's build environment does not guarantee devDependencies are
+ * installed, and the one-click deploy runs this script there — so a missing
+ * vendored copy falls back to npx instead of refusing to start on an otherwise
+ * deployable checkout. That fallback is the one case that needs the shell.
+ */
+const HAS_VENDORED_WRANGLER = fs.existsSync(WRANGLER_BIN);
+const WRANGLER_CMD = HAS_VENDORED_WRANGLER
+  ? { file: process.execPath, lead: [WRANGLER_BIN], shell: false }
+  : {
+      // The version is stated explicitly so npx fetches from the registry
+      // rather than resolving node_modules/.bin/wrangler first. A partial or
+      // stale node_modules leaves a shim there that points at a file npm no
+      // longer has, and npx would then die with MODULE_NOT_FOUND instead of
+      // falling back cleanly. The major is kept in step with the wrangler
+      // range in package.json.
+      file: process.platform === 'win32' ? 'npx.cmd' : 'npx',
+      lead: ['--yes', 'wrangler@4'],
+      shell: process.platform === 'win32',
+    };
+const WRANGLER_HOW = HAS_VENDORED_WRANGLER
+  ? WRANGLER_BIN.replace(ROOT + path.sep, '')
+  : 'npx wrangler  (no vendored copy — devDependencies are not installed)';
+
 /** D1 free tier, for the write-budget report. */
 const DAILY_WRITE_BUDGET = 100000;
 
@@ -164,15 +194,34 @@ const TOKEN = (() => {
 const CHILD_ENV = TOKEN
   ? { ...process.env, CLOUDFLARE_API_TOKEN: TOKEN.value, WRANGLER_SEND_METRICS: 'false' }
   : { ...process.env, WRANGLER_SEND_METRICS: 'false' };
+/**
+ * Quote one argument for cmd.exe.
+ *
+ * Only used on the Windows npx fallback. Node concatenates the command and its
+ * arguments WITHOUT escaping them when `shell` is set, so an unquoted path
+ * containing a space — a checkout under "C:\Users\First Last" — would be split
+ * into two arguments. Doubling a double quote is how cmd.exe escapes one.
+ */
+const quoted = (a) => (/[\s"]/.test(String(a)) ? `"${String(a).replace(/"/g, '""')}"` : String(a));
 
-/** Run wrangler through node directly, so the npm shim is never involved. */
+/**
+ * Run wrangler.
+ *
+ * Where the executable comes from is WRANGLER_CMD's business. The only trick
+ * here is that when it resolves to a .cmd shim it has to go through a shell,
+ * and that is also the only case where the arguments need quoting by hand.
+ */
 function wrangler(args, { capture = false, allowFail = false } = {}) {
-  const res = spawnSync(process.execPath, [WRANGLER_BIN, ...args], {
-     cwd: ROOT,
+  const opts = {
+    cwd: ROOT,
     encoding: 'utf8',
     stdio: capture ? 'pipe' : 'inherit',
     env: CHILD_ENV,
-  });
+  };
+  const argv = [...WRANGLER_CMD.lead, ...args];
+  const res = WRANGLER_CMD.shell
+    ? spawnSync([WRANGLER_CMD.file, ...argv].map(quoted).join(' '), { ...opts, shell: true })
+    : spawnSync(WRANGLER_CMD.file, argv, opts);
   if (res.error) throw res.error;
   if (res.status !== 0 && !allowFail) {
     if (capture) {
@@ -187,14 +236,11 @@ function wrangler(args, { capture = false, allowFail = false } = {}) {
 // ---------------------------------------------------------------- 0. preflight
 step(0, 'checking prerequisites');
 
-// Check this FIRST: without it, every later step fails with a confusing
-// "failed with exit code 1" instead of saying what is actually missing.
-if (!fs.existsSync(WRANGLER_BIN)) {
-  fail(
-    'wrangler is not installed (node_modules is missing or incomplete)',
-    `run:  ${NPM} install     (npm.ps1 is blocked by the PowerShell execution policy, so use ${NPM})`,
-  );
-}
+// There used to be a hard check for the vendored wrangler here, and it failed
+// deploys that were perfectly fine: Cloudflare's build environment does not
+// guarantee devDependencies are installed, and that is exactly where the
+// one-click deploy runs this script. WRANGLER_CMD falls back to npx instead,
+// and where it came from is reported in the summary below.
 
 if (!fs.existsSync(IMPORT_SQL) && !SKIP_IMPORT) {
   fail(
@@ -206,7 +252,7 @@ const importMb = fs.existsSync(IMPORT_SQL) ? fs.statSync(IMPORT_SQL).size / 1048
 const stats = fs.existsSync(path.join(ROOT, 'data', 'stats.json'))
   ? JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'stats.json'), 'utf8'))
   : null;
-console.log(`  wrangler    : ${WRANGLER_BIN.replace(ROOT + path.sep, '')}`);
+console.log(`  wrangler    : ${WRANGLER_HOW}`);
 console.log(`  import file : ${importMb.toFixed(1)} MB${stats ? `  (${stats.entries.toLocaleString()} entries)` : ''}`);
 console.log(`  database    : ${DB_NAME}`);
 console.log(`  worker      : ${WORKER_NAME}`);

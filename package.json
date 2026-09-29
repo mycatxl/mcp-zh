@@ -53,7 +53,7 @@
   "engines": {
     "node": ">=22.5"
   },
-  "devDependencies": {
+  "dependencies": {
     "wrangler": "^4.0.0"
   }
 }

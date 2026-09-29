@@ -21,6 +21,16 @@ Cloudflare 的 Deploy to Cloudflare 按钮会克隆仓库、**自动创建 `wran
 - `deploy.mjs --cloud` 用**绑定名**（`DB`）而不是数据库名寻址 —— `wrangler d1 execute` 的 `database` 参数官方说明就是 "The name or binding"。这样用户在配置页里把数据库改名也照样能跑。
 - `--cloud` 下凭据缺失时**直接失败**，不退回 `wrangler login`：构建容器里没有浏览器也没有 stdin，退回去只会挂到任务超时。
 
+### wrangler 放在 dependencies，不是 devDependencies
+
+`deploy` 脚本要用 wrangler 干活，而 Cloudflare 的构建环境**不保证**装 devDependencies。`npm ci --omit=dev` 会把 devDependencies 整个跳过，那样按钮点下去就死在「找不到 wrangler」上。
+
+放进 `dependencies` 后两种装法都会带上它（实测 `npm ci --omit=dev --dry-run` 会安装 wrangler 4.142.0）。对一个 CLI 来说这不太常见，但这里它是**运行时**需求，不是开发期工具。
+
+> **连带坑**：`package-lock.json` 记录了依赖类型（`"dev": true`）。只改 `package.json` 而不重新生成锁文件，`npm ci` 会直接报「不同步」而失败 —— 恰好毁掉构建。改完必须跑 `npm install --package-lock-only`。
+
+`scripts/deploy.mjs` 里还有一层 npx 兜底，但它是安全网而非主路径：`npx wrangler` 会**先解析本地 `node_modules/.bin/wrangler`**，即使写成 `wrangler@4` 也一样；只要本地留有一份过期或残缺的 shim，兜底反而会以 `MODULE_NOT_FOUND` 失败。真正让主路径可靠的是上面这个依赖类型的改动。
+
 ### 数据校验不是洁癖
 
 `seed.mjs` 先取 `MANIFEST.json`，用 sha256 和解压后长度校验，先写 `.tmp` 再原子改名。
