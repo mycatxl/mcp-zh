@@ -1,6 +1,6 @@
 {
-  "name": "mcp-zh-registry",
-  "version": "1.0.0",
+  "name": "mcp-zh",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "A Chinese translation of the official MCP registry, served through the same paginated protocol — one source URL in the market, no plugins, works in strict network mode.",
@@ -14,8 +14,8 @@
     "check:ids": "node generator/check-id-collision.js",
     "check:served": "node generator/check-served.js",
     "measure": "node generator/measure-writes.js",
-    "test": "node test/host-mapper.js && node test/deploy-parse.js && node test/env-token.js && node test/limits.js && node generator/check-id-collision.js && node generator/check-served.js && node generator/step4-verify.js && node test/e2e.js",
-    "test:unit": "node test/host-mapper.js && node test/deploy-parse.js && node test/env-token.js",
+    "test": "node test/host-mapper.js && node test/source-order.js && node test/source-snippet.js && node test/deploy-parse.js && node test/env-token.js && node test/limits.js && node generator/check-id-collision.js && node generator/check-served.js && node generator/step4-verify.js && node test/e2e.js",
+    "test:unit": "node test/host-mapper.js && node test/source-order.js && node test/source-snippet.js && node test/deploy-parse.js && node test/env-token.js",
     "test:e2e": "node test/e2e.js",
     "dev": "wrangler dev --local --port 8788",
     "deploy": "wrangler deploy",
@@ -24,7 +24,12 @@
     "summary": "node scripts/summary.mjs --text",
     "check:all": "node generator/check-id-collision.js && node generator/check-served.js && node test/limits.js",
     "test:env": "node test/env-token.js",
-    "deploy:check": "node scripts/deploy.mjs --check"
+    "deploy:check": "node scripts/deploy.mjs --check",
+    "snippet": "node scripts/make-snippet.mjs",
+    "snippet:write": "node scripts/make-snippet.mjs --write",
+    "test:order": "node test/source-order.js",
+    "test:snippet": "node test/source-snippet.js",
+    "test:titles": "node generator/check-titles.js"
   },
   "engines": {
     "node": ">=22.5"

@@ -18,6 +18,9 @@ data/*.log
 data/*.pid
 data/sample-*.json
 
+# Generated from project.json after each deploy; contains the deployed endpoint.
+docs/console-snippet.txt
+
 # Keep the small summaries — they are useful in review.
 !data/stats.json
 !data/update.meta.json

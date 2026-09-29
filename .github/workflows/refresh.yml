@@ -1,4 +1,4 @@
-# Fully automated refresh AND publish of the MCP 中文源.
+# Fully automated refresh AND publish of the MCP 中文源 (mcp-zh).
 #
 # What runs: re-crawl the official registry, re-translate only what is new, verify
 # everything, then import into D1 and redeploy the Worker — but ONLY when the
@@ -16,6 +16,12 @@
 # plan, and crawling the registry takes about 19 minutes. The scheduled side has
 # to run where long jobs are allowed, so GitHub Actions does the refresh and
 # Cloudflare does the serving.
+#
+# WHERE THE DEPLOYED URL LIVES
+# scripts/deploy.mjs writes the real endpoint back into project.json after a
+# successful deploy, and this workflow reads it from there. Moving to another
+# Cloudflare account changes the *.workers.dev subdomain, and that is handled
+# without editing any file by hand.
 #
 # REQUIRED REPOSITORY SECRETS (Settings -> Secrets and variables -> Actions)
 #   CLOUDFLARE_API_TOKEN   from dash.cloudflare.com/profile/api-tokens,
@@ -115,9 +121,19 @@ jobs:
       - name: Read the published hash
         id: published
         run: |
-          HASH=$(curl -sS --max-time 20 "https://mcp-zh-registry.gplusss.workers.dev/health" \
+          # The deployed URL lives in project.json, which scripts/deploy.mjs writes
+          # after a successful deploy — so moving to another Cloudflare account (and
+          # therefore another *.workers.dev subdomain) needs no edit here.
+          URL=$(node -e 'import("./scripts/lib/project.mjs").then(m=>{const u=m.sourceUrl();process.stdout.write(u||"")})')
+          if [ -z "$URL" ]; then
+            echo "project.json has no publicUrl yet — treating this as a first publish"
+            echo "hash=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          HASH=$(curl -sS --max-time 20 "${URL%/servers}/health" \
                  | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{process.stdout.write(String(JSON.parse(d).contentHash??""))}catch{process.stdout.write("")}})')
           echo "hash=$HASH" >> "$GITHUB_OUTPUT"
+          echo "endpoint: ${URL%/servers}/health"
           echo "published hash: ${HASH:-（none）}"
 
       - name: Decide whether to publish

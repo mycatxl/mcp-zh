@@ -64,12 +64,13 @@
  *   --login-only      resolve credentials, report status, then stop
  *   --check           report what would happen, change nothing
  *   --db=<name>       D1 database name (default mcp-zh)
- *   --worker=<name>   Worker name (default mcp-zh-registry)
+ *   --worker=<name>   Worker name (default mcp-zh)
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadProject, saveProject, sourceUrl } from './lib/project.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -92,8 +93,11 @@ function arg(name, fallback) {
 }
 const has = (name) => process.argv.includes(`--${name}`);
 
-const DB_NAME = arg('db', 'mcp-zh');
-const WORKER_NAME = arg('worker', 'mcp-zh-registry');
+const PROJECT = loadProject();
+// Defaults come from project.json so a rename or an account switch is a one-line
+// edit in one file; the flags remain for ad-hoc deploys.
+const DB_NAME = arg('db', PROJECT.databaseName);
+const WORKER_NAME = arg('worker', PROJECT.workerName);
 const SKIP_IMPORT = has('skip-import');
 const LOGIN_ONLY = has('login-only');
 const CHECK_ONLY = has('check');
@@ -399,12 +403,25 @@ process.stdout.write(deployed.out);
 const urlMatch = /https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev/i.exec(deployed.out);
 const endpoint = urlMatch ? `${urlMatch[0].replace(/\/+$/, '')}/servers` : null;
 
+// Record where this actually landed. The workflow and the DevTools snippet both
+// read it from project.json, so a successful deploy keeps every copy in sync
+// without anyone editing a URL by hand.
+if (urlMatch) {
+  saveProject({
+    publicUrl: urlMatch[0].replace(/\/+$/, ''),
+    accountId: PROJECT.accountId ?? null,
+    deployedAt: new Date().toISOString(),
+  });
+}
+
 console.log('\n============================================================');
 if (endpoint) {
   console.log('  Done. Add this ONE source in the MCP market:\n');
   console.log(`    URL   ${endpoint}`);
   console.log('    Kind  registry\n');
   console.log('  Market -> Sources -> Add source, paste the URL, kind "registry".');
+  console.log('\n  Recorded in project.json, so the snippet and the workflow stay in sync.');
+  console.log('  Regenerate the DevTools snippet with: node scripts/make-snippet.mjs');
   console.log('\n  Verify it is live:');
   console.log(`    curl "${endpoint}?version=latest&limit=2"`);
   console.log(`    curl "${endpoint.replace('/servers', '/health')}"`);

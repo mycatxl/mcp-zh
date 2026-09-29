@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
 const DB_ID = '1a2b3c4d-5e6f-7890-abcd-ef1234567890';
-const WORKER_NAME = 'mcp-zh-registry';
+const WORKER_NAME = 'mcp-zh';
 
 let pass = 0;
 let fail = 0;
@@ -131,20 +131,20 @@ console.log('\n5) reading the URL out of `wrangler deploy`');
 {
   const sample = [
     'Total Upload: 12.34 KiB / gzip: 3.21 KiB',
-    'Uploaded mcp-zh-registry (1.23 sec)',
-    'Deployed mcp-zh-registry triggers (0.45 sec)',
-    '  https://mcp-zh-registry.some-subdomain.workers.dev',
+    'Uploaded mcp-zh (1.23 sec)',
+    'Deployed mcp-zh triggers (0.45 sec)',
+    '  https://mcp-zh.some-subdomain.workers.dev',
     'Current Version ID: abc-123',
   ].join('\n');
   const m = /https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev/i.exec(sample);
-  check('url extracted', !!m && m[0] === 'https://mcp-zh-registry.some-subdomain.workers.dev', m?.[0]);
+  check('url extracted', !!m && m[0] === 'https://mcp-zh.some-subdomain.workers.dev', m?.[0]);
   check(
     'endpoint built correctly',
-    `${m[0].replace(/\/+$/, '')}/servers` === 'https://mcp-zh-registry.some-subdomain.workers.dev/servers',
+    `${m[0].replace(/\/+$/, '')}/servers` === 'https://mcp-zh.some-subdomain.workers.dev/servers',
   );
 }
 {
-  const sample = 'Deployed mcp-zh-registry triggers (0.45 sec)\n  mcp.example.com (custom domain)';
+  const sample = 'Deployed mcp-zh triggers (0.45 sec)\n  mcp.example.com (custom domain)';
   const m = /https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev/i.exec(sample);
   check('no workers.dev url -> no invented endpoint', !m);
 }
