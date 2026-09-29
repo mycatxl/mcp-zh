@@ -331,6 +331,37 @@ console.log('\n9) identical content is not re-imported');
   check('both flags are documented', /--force\s{11}re-import even when/.test(src) && /--skip-import\s{5}deploy only/.test(src));
 }
 
+// ---- 10. the refresh workflow can actually read the published hash -------
+// It used to read /health, which needs the deployed URL — and that URL is in
+// project.json, which only ever gets written inside Cloudflare's build
+// checkout. Not pushed back to the repository, so it stays null on the
+// one-click flow, no hash is ever read, and every daily run re-imports
+// identical content. Asking D1 directly removes the whole chain.
+console.log('\n10) the refresh workflow reads the hash from D1, not /health');
+{
+  const script = read('scripts/published-hash.mjs');
+  const wf = read('.github/workflows/refresh.yml');
+
+  check('the helper exists and queries meta directly', /SELECT value FROM meta WHERE key = 'content_hash'/.test(script));
+  check('it addresses the database by binding', /binding\s*=\s*"\(\[\^"\]\+\)"/.test(script) || /execFileSync\(\s*process\.execPath,\s*\[WRANGLER_BIN, 'd1', 'execute', binding/.test(script));
+  check('it prints the hash and nothing else on stdout', /process\.stdout\.write\(hash\)/.test(script));
+  check('diagnostics go to stderr, so stdout stays clean', /console\.error\(msg\)/.test(script));
+
+  // Every failure has to mean "publish". Being wrong that way costs one import;
+  // being wrong the other way leaves the marketplace stale forever.
+  check('a missing meta table is survivable', /try \{/.test(script) && /catch \(e\) \{/.test(script));
+  check('...and is treated as a first publish', /treating this as a first publish/.test(script));
+  check('a missing token does not hang on an interactive login', /no CLOUDFLARE_API_TOKEN; reporting/.test(script));
+  check('it always exits 0', /process\.exit\(0\);/.test(script) && !/process\.exit\(1\)/.test(script));
+
+  // Wiring.
+  check('the workflow calls the helper', /node scripts\/published-hash\.mjs/.test(wf));
+  check('...and no longer fetches it with curl', !/curl[^\n]*health/i.test(wf));
+  check('...nor derives a URL for it', !/sourceUrl\(\)/.test(wf));
+  check('...with the credentials it needs', /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/.test(wf));
+  check('the hash still reaches the decide step', /echo "hash=\$HASH" >> "\$GITHUB_OUTPUT"/.test(wf));
+}
+
 console.log('\n--------------------------------------------');
 console.log(`PASS ${pass}   FAIL ${fail}`);
 process.exit(fail === 0 ? 0 : 1);

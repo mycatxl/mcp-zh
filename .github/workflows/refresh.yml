@@ -120,21 +120,22 @@ jobs:
       # ---- publish ---------------------------------------------------------
       - name: Read the published hash
         id: published
+        env:
+          # Needed to query D1. Without it the script reports "no hash", which
+          # makes the next step treat this as a first publish — the safe way to
+          # be wrong.
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          # The deployed URL lives in project.json, which scripts/deploy.mjs writes
-          # after a successful deploy — so moving to another Cloudflare account (and
-          # therefore another *.workers.dev subdomain) needs no edit here.
-          URL=$(node -e 'import("./scripts/lib/project.mjs").then(m=>{const u=m.sourceUrl();process.stdout.write(u||"")})')
-          if [ -z "$URL" ]; then
-            echo "project.json has no publicUrl yet — treating this as a first publish"
-            echo "hash=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          HASH=$(curl -sS --max-time 20 "${URL%/servers}/health" \
-                 | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{process.stdout.write(String(JSON.parse(d).contentHash??""))}catch{process.stdout.write("")}})')
+          # Asked straight from D1, not from /health. /health needs the deployed
+          # URL, which lives in project.json — and the one-click deploy writes
+          # that file inside Cloudflare's build checkout, which is never pushed
+          # back here. So on the deployment flow this project recommends, the
+          # URL stays null, no hash is ever read, and every run re-imports
+          # identical data for ~69% of the daily write budget.
+          HASH=$(node scripts/published-hash.mjs)
           echo "hash=$HASH" >> "$GITHUB_OUTPUT"
-          echo "endpoint: ${URL%/servers}/health"
-          echo "published hash: ${HASH:-（none）}"
+          echo "published hash: ${HASH:-（none — first publish）}"
 
       - name: Decide whether to publish
         id: decide
