@@ -5,5 +5,6 @@
   "databaseName": "mcp-zh",
   "publicUrl": null,
   "accountId": null,
-  "deployedAt": null
+  "deployedAt": null,
+  "seedUrl": "https://github.com/mycatxl/mcp-zh/releases/download/data-latest/import.sql.gz"
 }

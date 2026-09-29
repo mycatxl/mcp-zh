@@ -101,7 +101,7 @@ if (!fs.existsSync(importPath)) {
 console.log('\n3) files the deploy script needs');
 for (const rel of [
   'scripts/deploy.mjs',
-  'worker/wrangler.toml',
+   'wrangler.toml',
   'worker/src/index.js',
   'generator/lib/schema.sql',
   'data/import.sql',

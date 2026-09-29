@@ -7,29 +7,36 @@
   "scripts": {
     "fetch": "node generator/step1-fetch.js",
     "sample": "node generator/step2-sample.js",
-    "build": "node generator/step3-sql.js",
+    "translate": "node generator/step3-sql.js",
     "verify": "node generator/step4-verify.js",
     "update": "node generator/update.js",
     "host-mapper": "node generator/extract-host-mapper.js",
     "check:ids": "node generator/check-id-collision.js",
     "check:served": "node generator/check-served.js",
     "measure": "node generator/measure-writes.js",
-    "test": "node test/host-mapper.js && node test/source-order.js && node test/source-snippet.js && node test/deploy-parse.js && node test/env-token.js && node test/limits.js && node generator/check-id-collision.js && node generator/check-served.js && node generator/step4-verify.js && node test/e2e.js",
-    "test:unit": "node test/host-mapper.js && node test/source-order.js && node test/source-snippet.js && node test/deploy-parse.js && node test/env-token.js",
+    "test": "node test/host-mapper.js && node test/source-order.js && node test/source-snippet.js && node test/deploy-parse.js && node test/env-token.js && node test/limits.js && node test/seed.js && node generator/check-id-collision.js && node generator/check-served.js && node generator/step4-verify.js && node test/e2e.js",
+    "test:unit": "node test/host-mapper.js && node test/source-order.js && node test/source-snippet.js && node test/deploy-parse.js && node test/env-token.js && node test/seed.js",
     "test:e2e": "node test/e2e.js",
-    "dev": "wrangler dev --local --port 8788",
-    "deploy": "wrangler deploy",
-    "deploy:all": "node scripts/deploy.mjs",
     "test:limits": "node test/limits.js",
-    "summary": "node scripts/summary.mjs --text",
-    "check:all": "node generator/check-id-collision.js && node generator/check-served.js && node test/limits.js",
     "test:env": "node test/env-token.js",
-    "deploy:check": "node scripts/deploy.mjs --check",
-    "snippet": "node scripts/make-snippet.mjs",
-    "snippet:write": "node scripts/make-snippet.mjs --write",
     "test:order": "node test/source-order.js",
     "test:snippet": "node test/source-snippet.js",
-    "test:titles": "node generator/check-titles.js"
+    "test:seed": "node test/seed.js",
+    "test:titles": "node generator/check-titles.js",
+    "check:all": "node generator/check-id-collision.js && node generator/check-served.js && node test/limits.js",
+    "summary": "node scripts/summary.mjs --text",
+    "snippet": "node scripts/make-snippet.mjs",
+    "snippet:write": "node scripts/make-snippet.mjs --write",
+
+    "dev": "wrangler dev --local --port 8788",
+
+    "_comment_build": "Cloudflare's Deploy to Cloudflare button pre-fills its build and deploy fields from these two names, so they have to work in a FRESH CLONE with no data/ directory and no crawl. `build` therefore fetches the pre-built dataset rather than regenerating it, and the translation step lives under `translate`.",
+    "build": "node scripts/seed.mjs",
+    "deploy": "node scripts/deploy.mjs --cloud",
+    "seed": "node scripts/seed.mjs",
+
+    "deploy:all": "node scripts/deploy.mjs",
+    "deploy:check": "node scripts/deploy.mjs --check"
   },
   "engines": {
     "node": ">=22.5"

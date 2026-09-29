@@ -151,6 +151,20 @@ jobs:
             echo "content changed: ${OLD:-（none）} -> $NEW"
           fi
 
+      # What makes the Deploy to Cloudflare button work: Cloudflare clones this
+      # repository and runs its build step in a fresh checkout that has no data/
+      # directory and no translation cache, so that step downloads this instead
+      # of trying to regenerate it. Published BEFORE the D1 import so that a
+      # failed import still leaves a good dataset available to every other
+      # clone, fork and one-click deploy.
+      - name: Publish the dataset as a release asset
+        if: steps.decide.outputs.publish == 'true'
+        env:
+          # GITHUB_TOKEN is provided automatically; the `permissions: contents:
+          # write` block above is what allows it to create the release.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/publish-seed.mjs
+
       - name: Import into D1 and redeploy
         if: steps.decide.outputs.publish == 'true'
         env:

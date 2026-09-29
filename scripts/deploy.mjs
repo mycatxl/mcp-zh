@@ -9,7 +9,7 @@
  *
  *   1. resolves credentials — an API token if present, otherwise OAuth login
  *   2. creates the D1 database, or reuses it if it already exists
- *   3. writes its id into worker/wrangler.toml
+  *   3. writes its id into wrangler.toml
  *   4. applies the schema
  *   5. imports data/import.sql, and checks the REAL rows-written against the quota
  *   6. deploys the Worker and prints the source URL
@@ -65,6 +65,10 @@
  *   --check           report what would happen, change nothing
  *   --db=<name>       D1 database name (default mcp-zh)
  *   --worker=<name>   Worker name (default mcp-zh)
+ *   --cloud           the database is already provisioned and bound (this is
+ *                     what the Deploy to Cloudflare button's `deploy` script
+ *                     uses): skip the lookup/create, and address the database
+ *                     by BINDING name so a renamed database still works
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -74,8 +78,7 @@ import { loadProject, saveProject, sourceUrl } from './lib/project.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
-const WORKER = path.join(ROOT, 'worker');
-const TOML = path.join(WORKER, 'wrangler.toml');
+const TOML = path.join(ROOT, 'wrangler.toml');
 const IMPORT_SQL = path.join(ROOT, 'data', 'import.sql');
 const SCHEMA_SQL = path.join(ROOT, 'generator', 'lib', 'schema.sql');
 const WRANGLER_BIN = path.join(ROOT, 'node_modules', 'wrangler', 'bin', 'wrangler.js');
@@ -101,6 +104,7 @@ const WORKER_NAME = arg('worker', PROJECT.workerName);
 const SKIP_IMPORT = has('skip-import');
 const LOGIN_ONLY = has('login-only');
 const CHECK_ONLY = has('check');
+const CLOUD = has('cloud');
 
 function step(n, text) {
   console.log(`\n[${n}] ${text}`);
@@ -110,6 +114,18 @@ function fail(text, hint) {
   console.error(`\n  ERROR  ${text}`);
   if (hint) console.error(`         ${hint}`);
   process.exit(1);
+}
+
+/**
+ * The D1 binding name from wrangler.toml.
+ *
+ * `wrangler d1 execute` accepts either a database name or a binding, and the
+ * binding is the only one that keeps working when someone renames the database
+ * in Cloudflare's setup form.
+ */
+function readBinding(tomlPath) {
+  const m = /^\s*binding\s*=\s*"([^"]+)"/m.exec(fs.readFileSync(tomlPath, 'utf8'));
+  return m ? m[1] : 'DB';
 }
 
 /**
@@ -152,7 +168,7 @@ const CHILD_ENV = TOKEN
 /** Run wrangler through node directly, so the npm shim is never involved. */
 function wrangler(args, { capture = false, allowFail = false } = {}) {
   const res = spawnSync(process.execPath, [WRANGLER_BIN, ...args], {
-    cwd: WORKER,
+     cwd: ROOT,
     encoding: 'utf8',
     stdio: capture ? 'pipe' : 'inherit',
     env: CHILD_ENV,
@@ -227,6 +243,20 @@ let authed = false;
     console.error('    setx CLOUDFLARE_API_TOKEN ""          (to clear it)');
     process.exit(1);
   } else {
+    // In --cloud mode credentials are Cloudflare's responsibility: the build
+    // environment injects CLOUDFLARE_API_TOKEN, and there is no browser and no
+    // stdin to authorise with. Falling through to `wrangler login` would hang
+    // until the job times out and report nothing useful, so this fails fast and
+    // names where the token is supposed to come from.
+    if (CLOUD) {
+      fail(
+        'not authenticated, and --cloud never opens a browser',
+        "CLOUDFLARE_API_TOKEN is missing from the environment.\n" +
+          '         Inside Cloudflare\'s build environment it is injected automatically;\n' +
+          '         locally, drop --cloud and run `node scripts/deploy.mjs`.',
+      );
+    }
+
     console.log('  no API token, and not logged in.');
     console.log('');
     console.log('  A FREE Cloudflare account is enough — no credit card, no payment method.');
@@ -276,51 +306,72 @@ if (LOGIN_ONLY) {
 }
 
 // --------------------------------------------------------------- 2. database
-step(2, `resolving D1 database "${DB_NAME}"`);
+//
+// In --cloud mode the database already exists and is already bound: Cloudflare
+// created it while setting up the Deploy to Cloudflare button, and rewrote
+// database_id in wrangler.toml itself. Looking it up by NAME would break the
+// moment someone types a different name into the setup form, so the binding is
+// used instead — `wrangler d1 execute` accepts either a name or a binding.
+const DB_BINDING = CLOUD ? readBinding(TOML) : DB_NAME;
 let databaseId = null;
 
-const list = wrangler(['d1', 'list', '--json'], { capture: true, allowFail: true });
-if (list.code === 0) {
-  try {
-    const parsed = JSON.parse(list.out.slice(list.out.indexOf('[')));
-    const found = (Array.isArray(parsed) ? parsed : []).find(
-      (d) => d?.name === DB_NAME || d?.database_name === DB_NAME,
-    );
-    if (found) {
-      databaseId = found.uuid ?? found.database_id ?? null;
-      console.log(`  already exists: ${databaseId}`);
+if (CLOUD) {
+  step(2, `using the D1 binding "${DB_BINDING}"`);
+  console.log('  --cloud: provisioned and bound during setup; nothing to look up or create');
+} else {
+  step(2, `resolving D1 database "${DB_NAME}"`);
+
+  const list = wrangler(['d1', 'list', '--json'], { capture: true, allowFail: true });
+  if (list.code === 0) {
+    try {
+      const parsed = JSON.parse(list.out.slice(list.out.indexOf('[')));
+      const found = (Array.isArray(parsed) ? parsed : []).find(
+        (d) => d?.name === DB_NAME || d?.database_name === DB_NAME,
+      );
+      if (found) {
+        databaseId = found.uuid ?? found.database_id ?? null;
+        console.log(`  already exists: ${databaseId}`);
+      }
+    } catch {
+      /* fall through to create */
     }
-  } catch {
-    /* fall through to create */
   }
-}
 
-if (!databaseId && CHECK_ONLY) {
-  console.log(`  --check: would create database "${DB_NAME}". Stopping.`);
-  process.exit(0);
-}
-
-if (!databaseId) {
-  console.log('  creating…');
-  const created = wrangler(['d1', 'create', DB_NAME], { capture: true });
-  const m = /database_id\s*=\s*"([^"]+)"/.exec(created.out) ?? /"uuid"\s*:\s*"([^"]+)"/.exec(created.out);
-  if (!m) {
-    console.error(created.out);
-    fail('could not read the new database id from wrangler output');
+  if (!databaseId && CHECK_ONLY) {
+    console.log(`  --check: would create database "${DB_NAME}". Stopping.`);
+    process.exit(0);
   }
-  databaseId = m[1];
-  console.log(`  created: ${databaseId}`);
+
+  if (!databaseId) {
+    console.log('  creating…');
+    const created = wrangler(['d1', 'create', DB_NAME], { capture: true });
+    const m = /database_id\s*=\s*"([^"]+)"/.exec(created.out) ?? /"uuid"\s*:\s*"([^"]+)"/.exec(created.out);
+    if (!m) {
+      console.error(created.out);
+      fail('could not read the new database id from wrangler output');
+    }
+    databaseId = m[1];
+    console.log(`  created: ${databaseId}`);
+  }
 }
 
 // --------------------------------------------------------------- 3. config
-step(3, 'writing worker/wrangler.toml');
-const toml = fs.readFileSync(TOML, 'utf8');
-const next = toml
-  .replace(/^name\s*=\s*".*"$/m, `name = "${WORKER_NAME}"`)
-  .replace(/^(database_id\s*=\s*)".*"$/m, `$1"${databaseId}"`);
-if (!/database_id\s*=\s*"/.test(next)) fail('wrangler.toml has no database_id line to fill in');
-fs.writeFileSync(TOML, next, 'utf8');
-console.log(`  database_id = ${databaseId}`);
+// In --cloud mode wrangler.toml is already correct: Cloudflare wrote the real
+// database_id into it while provisioning, so rewriting it would be pointless
+// and would dirty a checkout that is not ours to edit.
+if (CLOUD) {
+  step(3, 'wrangler.toml left as it is (--cloud)');
+  console.log('  the database id was filled in by Cloudflare during setup');
+} else {
+  step(3, 'writing wrangler.toml');
+  const toml = fs.readFileSync(TOML, 'utf8');
+  const next = toml
+    .replace(/^name\s*=\s*".*"$/m, `name = "${WORKER_NAME}"`)
+    .replace(/^(database_id\s*=\s*)".*"$/m, `$1"${databaseId}"`);
+  if (!/database_id\s*=\s*"/.test(next)) fail('wrangler.toml has no database_id line to fill in');
+  fs.writeFileSync(TOML, next, 'utf8');
+  console.log(`  database_id = ${databaseId}`);
+}
 
 if (CHECK_ONLY) {
   console.log('\n--check: everything above was a dry run; stopping before any writes.');
@@ -329,7 +380,7 @@ if (CHECK_ONLY) {
 
 // ----------------------------------------------------------------- 4. schema
 step(4, 'applying schema (drops and recreates the two tables)');
-wrangler(['d1', 'execute', DB_NAME, '--remote', `--file=${SCHEMA_SQL}`, '-y']);
+wrangler(['d1', 'execute', DB_BINDING, '--remote', `--file=${SCHEMA_SQL}`, '-y']);
 console.log('  schema applied');
 
 // --------------------------------------------------------------- 5. import
@@ -350,7 +401,7 @@ if (SKIP_IMPORT) {
   // Captured rather than streamed, because the summary line carries the REAL
   // rows-written count — the only way to confirm the write-budget estimate
   // against what Cloudflare actually charged.
-  const imported = wrangler(['d1', 'execute', DB_NAME, '--remote', `--file=${IMPORT_SQL}`, '-y'], {
+  const imported = wrangler(['d1', 'execute', DB_BINDING, '--remote', `--file=${IMPORT_SQL}`, '-y'], {
     capture: true,
   });
   process.stdout.write(imported.out);
@@ -378,7 +429,7 @@ if (SKIP_IMPORT) {
 
   // Read the count back through a separate query, not just the import's own report.
   const check = wrangler(
-    ['d1', 'execute', DB_NAME, '--remote', '--json', '--command',
+    ['d1', 'execute', DB_BINDING, '--remote', '--json', '--command',
       'SELECT (SELECT COUNT(*) FROM servers) AS entries, (SELECT COUNT(*) FROM search_data) AS fts'],
     { capture: true },
   );

@@ -11,6 +11,10 @@ URL   https://<你的 Worker>.workers.dev/servers
 
 不装插件、不改设置、严格网络模式可用、完全免费。
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/mycatxl/mcp-zh)
+
+**一键部署**：点按钮 → 授权你的 Cloudflare 账号 → 自动建库、灌入 34,279 条中文数据、部署完成。**不用 API Token，不用命令行，不在这台机器上跑任何东西。** 详见 [部署](#部署)。
+
 ---
 
 ## 它是怎么工作的
@@ -20,7 +24,12 @@ URL   https://<你的 Worker>.workers.dev/servers
         │  GitHub Actions 每天 03:17 抓取 + 翻译
         ▼
    data/import.sql（43.5 MB）
-        │  内容指纹变了才导入
+        │
+        ├────► 发布成 release 资源（压缩后 7.8 MB，公开可下）
+        │          └── 给「一键部署按钮」和 `npm run build` 取用
+        │              所以别人不用跑那 19 分钟的抓取
+        │
+        │  内容指纹变了才导入（避免每天烧掉 69% 的 D1 日额度）
         ▼
 Cloudflare D1 ── 34,279 条中文记录 + 中文 FTS5 搜索索引
         ▲  查询
@@ -35,13 +44,41 @@ PI-Desktop 市场 ── 你加一个源
 
 ## 部署
 
-### Windows 用户先看这条
+### 方式一：一键按钮（推荐）
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/mycatxl/mcp-zh)
+
+1. 点上面这个按钮
+2. 用你的 Cloudflare 账号授权（没有就现场注册，**免费、不用绑卡**）
+3. 配置页里构建/部署命令已经预填好了，直接确认
+4. 等几分钟。Cloudflare 会自动：建一个 D1 数据库 → 回填 `database_id` → 下载数据集 → 解压校验 → 导入 **34,279 条中文记录** → 部署 Worker
+5. 完成后会给你一个 `https://mcp-zh.<你的子域>.workers.dev` 地址
+
+**不需要 API Token，不需要命令行，不需要在这台机器上做任何事。** 数据库、Worker、URL 全程只落在你自己的账号里。
+
+#### 它是怎么拿到数据的
+
+全新克隆里既没有 `data/` 目录，也没跑过那 19 分钟的抓取，所以构建步骤（`npm run build` → `scripts/seed.mjs`）会去下载预先发布好的数据集。
+
+下载会**先取 `MANIFEST.json`，再用 sha256 和解压后的长度校验**，两个都对上才落盘，而且是先写 `.tmp` 再原子改名。这不是洁癖：一个被截断的导入文件会**安安静静地导入成功**，然后留下一个条目少了一半的市场 —— 不校验的话，这种故障在界面上和成功长得一模一样。
+
+#### 为什么 `wrangler.toml` 必须在仓库根目录
+
+Cloudflare 读**根目录**的 wrangler 配置来决定创建哪些资源、并回填 id。放在子目录里它找不到，结果就是 Worker 部署成功、但没绑定数据库 —— 看起来一切正常，直到第一次查询返回空。
+
+随后跑的 `deploy` 脚本用**绑定名**（`DB`）而不是数据库名寻址。这是有意的：你在配置页里把数据库改成别的名字，脚本照样能跑。
+
+### 方式二：本机命令行
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/mycatxl/mcp-zh)
+
+#### Windows 用户先看这条
 
 PowerShell 执行策略**禁止运行 `npm.ps1`**，所以 `npm install` / `npm run ...` 会报 `running scripts is disabled`。
 
 **用 `node` 直接跑脚本**（推荐），或把 `npm` 换成 `npm.cmd`。
 
-### 授权
+#### 授权
 
 两种方式，任选：
 
@@ -70,7 +107,7 @@ node scripts/deploy.mjs
 > node node_modules/wrangler/bin/wrangler.js login --device
 > ```
 
-### 部署
+#### 部署
 
 ```powershell
 cd D:\WorkSpace\Chat\mcp-zh
@@ -79,9 +116,11 @@ node scripts/deploy.mjs
 
 脚本会自动：检查登录 → 创建/复用 D1 数据库 → 回填 `wrangler.toml` → 建表 → 导入 → 部署 → **把 URL 写回 `project.json`** → 打印要填进市场的 URL。
 
+数据集不在仓库里（43.5 MB，每次刷新都会变）。本机没有时它会让你先跑 `node scripts/seed.mjs` 下载 —— 大概率是**秒下**，因为它已经以 7.8 MB 压缩包的形式发布在 release 里。
+
 **URL 只存在 `project.json` 一处** —— 换 CF 账号时 `*.workers.dev` 子域会变，workflow、DevTools 代码片段、测试全部自动跟着走，不用手改任何文件。
 
-### 常用参数
+#### 常用参数
 
 ```powershell
 node scripts/deploy.mjs --check          # 干跑：只报告会做什么
@@ -89,9 +128,10 @@ node scripts/deploy.mjs --login-only     # 只解决授权
 node scripts/deploy.mjs --skip-import    # 只建表+部署，不导数据
 node scripts/deploy.mjs --db=名字        # 换数据库名
 node scripts/deploy.mjs --worker=名字    # 换 Worker 名（决定 URL）
+node scripts/deploy.mjs --cloud          # 库已建好且已绑定（一键按钮走的模式）
 ```
 
-### 部署后自检
+#### 部署后自检
 
 ```powershell
 curl https://<你的 Worker>.workers.dev/health
@@ -139,27 +179,31 @@ te = () => {
 
 ## 自动更新
 
-推到 GitHub 后，每天 03:17 UTC 自动跑：
+每天 03:17 UTC 自动跑：
 
 ```
 抓取（19 分钟）→ 翻译（只翻新增）→ 全部检查
         ↓
 算内容指纹，和线上 /health 的对比
         ↓
-  相同 → 跳过导入（不烧额度）
-  不同 → 自动导入 D1 + 重新部署
+  相同 → 整个跳过（不烧 D1 额度，也不churn release 资源）
+  不同 → 先发布数据集到 release → 再导入 D1 + 重新部署
 ```
 
 **为什么要内容指纹**：全量导入要花 **68,564 行写入 = 69% 的日额度**（实测）。每天无脑导一遍会烧光额度，出错时没有余量重试。
+
+**为什么数据集先发布、再导入 D1**：这样即使导入失败（额度用尽、网络抖动），一个校验过的、可用的数据集仍然对所有克隆、fork 和一键部署可用。顺序反过来的话，一次失败的导入会同时毁掉自动更新和所有人的一键部署。
 
 **需要配置两个 GitHub Secrets**（Settings → Secrets and variables → Actions）：
 
 | 名称 | 值 |
 |---|---|
-| `CLOUDFLARE_API_TOKEN` | 同上，用 "Edit Cloudflare Workers" 模板 |
+| `CLOUDFLARE_API_TOKEN` | 用 "Edit Cloudflare Workers" 模板创建 |
 | `CLOUDFLARE_ACCOUNT_ID` | 面板 URL 里的账号 id |
 
 没配也不会失败 —— 检查照跑，只跳过发布并给警告（fork 和全新克隆不会红）。
+
+> **如果你是用一键按钮部署的**：Cloudflare 会把仓库克隆一份**到你的账号下**，自动刷新要在**那一份**里跑。所以 Secrets 得加在**你自己的仓库**（Settings → Secrets and variables → Actions），加在这个源仓库上对你不生效。刷新出来的数据集也会发布到你的仓库，而不是这里。
 
 ---
 
@@ -239,7 +283,8 @@ D1 免费版每天 **10 万行写入**。FTS5 的索引方式直接决定能否�
 ## 项目结构
 
 ```
-project.json                  身份唯一来源：源 id/名称、Worker 名、数据库名、已部署 URL
+project.json                  身份唯一来源：源 id/名称、Worker 名、数据库名、已部署 URL、数据集地址
+wrangler.toml                 Worker 配置。必须在仓库根目录 —— 一键部署按钮据此识别 D1 绑定
 generator/
   step1-fetch.js              抓官方全量 → data/raw.jsonl
   step2-sample.js             抽样翻译并打印对照（质量评审）
@@ -260,7 +305,9 @@ shared/
   shape.js                    记录形状 + id 派生 + 分类保护
 worker/src/index.js           registry 协议实现
 scripts/
-  deploy.mjs                  一键部署（读/写 project.json）
+  deploy.mjs                  一键部署；--cloud 是一键按钮走的模式
+  seed.mjs                    取数据集：本地已有就跳过，否则下载 + 校验
+  publish-seed.mjs            把数据集发布成 release 资源（每次刷新自动跑）
   make-snippet.mjs            生成 DevTools 代码片段
   summary.mjs                 数据摘要（CI 与本地共用）
   lib/project.mjs             project.json 读写 + 校验
@@ -271,6 +318,7 @@ test/
   deploy-parse.js             部署脚本解析 + 安全约束
   env-token.js                API token 路径验证
   limits.js                   D1 硬限制预检
+  seed.js                     一键部署路径（布局、脚本契约、下载校验）
   e2e.js                      对运行中的 Worker 做端到端断言
 docs/console-snippet.txt      生成的 DevTools 片段
 ```
@@ -278,7 +326,12 @@ docs/console-snippet.txt      生成的 DevTools 片段
 ## 命令
 
 ```powershell
-node scripts/deploy.mjs             # 一键部署 ← 最常用
+npm run build                       # 取数据集：本地已有就跳过，否则下载并校验
+npm run deploy                      # 建表 + 导入 + 部署（一键按钮跑的就是这条）
+
+node scripts/deploy.mjs             # 同样的事，但自己按名字查/建 D1 ← 本机最常用
+node scripts/seed.mjs --check       # 只报告数据集会从哪来
+node scripts/publish-seed.mjs       # 把当前数据集发布成 release 资源
 node scripts/make-snippet.mjs       # 打印 DevTools 片段
 node scripts/summary.mjs --text     # 数据摘要
 
@@ -287,6 +340,7 @@ node generator/step4-verify.js      # 真实 SQLite 全量验证
 node generator/check-id-collision.js
 node generator/check-served.js
 node test/limits.js                 # D1 硬限制预检
+node test/seed.js                   # 一键部署路径契约
 node test/source-order.js           # 源顺序规则
 node test/source-snippet.js         # 片段验证
 node test/e2e.js                    # 端到端（需 Worker 在 8788 或线上）

@@ -30,7 +30,7 @@ function check(label, ok, detail = '') {
 
 // ---- 1. wrangler.toml rewrite -------------------------------------------
 console.log('1) wrangler.toml rewrite');
-const toml = fs.readFileSync(path.join(ROOT, 'worker', 'wrangler.toml'), 'utf8');
+ const toml = fs.readFileSync(path.join(ROOT, 'wrangler.toml'), 'utf8');
 const next = toml
   .replace(/^name\s*=\s*".*"$/m, `name = "${WORKER_NAME}"`)
   .replace(/^(database_id\s*=\s*)".*"$/m, `$1"${DB_ID}"`);

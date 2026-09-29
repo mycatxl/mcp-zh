@@ -1,0 +1,30 @@
+# Wrangler configuration lives at the REPOSITORY ROOT on purpose.
+#
+# Cloudflare's "Deploy to Cloudflare" button reads the wrangler config of the
+# source repo to decide which resources to provision before it runs anything
+# from package.json. A config tucked away in a subdirectory is not found, so
+# the button would deploy the Worker with no database bound to it.
+#:schema node_modules/wrangler/config-schema.json
+
+name = "mcp-zh"
+main = "worker/src/index.js"
+compatibility_date = "2025-06-01"
+
+# The database gets its real id in one of two ways:
+#
+#   * the Deploy to Cloudflare button provisions a fresh D1 for whoever is
+#     deploying and rewrites database_id here, before package.json's `deploy`
+#     script imports the data;
+#   * scripts/deploy.mjs looks the database up by name, creates it when it is
+#     missing, and writes the real id back.
+#
+# The all-zero placeholder is what keeps `wrangler dev --local` working before
+# either of those has happened: Miniflare keeps its own SQLite file under
+# .wrangler/state and ignores the id completely.
+[[d1_databases]]
+binding = "DB"
+database_name = "mcp-zh"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[observability]
+enabled = true

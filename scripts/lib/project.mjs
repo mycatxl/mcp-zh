@@ -31,6 +31,18 @@ const DEFAULTS = {
   publicUrl: null,
   accountId: null,
   deployedAt: null,
+  // Where scripts/seed.mjs fetches the pre-built import file from.
+  //
+  // It deliberately points at THIS repository rather than the caller's, so that
+  // a fork, or someone using the Deploy to Cloudflare button, still gets a
+  // populated database without having to run the ~19 minute crawl and the
+  // translation pass first.
+  //
+  // The tag is reused on every refresh and the asset is replaced in place, so
+  // this URL keeps working even though its contents keep changing. That is also
+  // why it is not `releases/latest` — that would silently follow whichever
+  // release happened to be created most recently.
+  seedUrl: 'https://github.com/mycatxl/mcp-zh/releases/download/data-latest/import.sql.gz',
 };
 
 /** @returns {typeof DEFAULTS} */
@@ -63,6 +75,16 @@ export function saveProject(next) {
 export function sourceUrl(project = loadProject()) {
   if (!project.publicUrl) return null;
   return `${String(project.publicUrl).replace(/\/+$/, '')}/servers`;
+}
+
+/**
+ * MANIFEST.json sits beside the archive; scripts/seed.mjs downloads it and
+ * checks the decompressed bytes against it, because a truncated import file
+ * imports silently and leaves a half-populated marketplace.
+ */
+export function seedManifestUrl(project = loadProject()) {
+  if (!project.seedUrl) return null;
+  return String(project.seedUrl).replace(/[^/]+$/, 'MANIFEST.json');
 }
 
 /**
