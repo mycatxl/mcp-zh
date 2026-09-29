@@ -60,7 +60,7 @@
  * does on a cron.
  *
  * Flags:
- *   --skip-import     schema + deploy only (use when data is already loaded)
+ *   --skip-import     deploy only: leave the database exactly as it is
  *   --login-only      resolve credentials, report status, then stop
  *   --check           report what would happen, change nothing
  *   --db=<name>       D1 database name (default mcp-zh)
@@ -69,6 +69,8 @@
  *                     what the Deploy to Cloudflare button's `deploy` script
  *                     uses): skip the lookup/create, and address the database
  *                     by BINDING name so a renamed database still works
+ *   --force           re-import even when the published content hash already
+ *                     matches (--cloud skips that import otherwise)
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -135,6 +137,7 @@ const SKIP_IMPORT = has('skip-import');
 const LOGIN_ONLY = has('login-only');
 const CHECK_ONLY = has('check');
 const CLOUD = has('cloud');
+const FORCE = has('force');
 
 function step(n, text) {
   console.log(`\n[${n}] ${text}`);
@@ -156,6 +159,28 @@ function fail(text, hint) {
 function readBinding(tomlPath) {
   const m = /^\s*binding\s*=\s*"([^"]+)"/m.exec(fs.readFileSync(tomlPath, 'utf8'));
   return m ? m[1] : 'DB';
+}
+
+/**
+ * The content hash D1 is currently publishing, or null when it cannot be read.
+ *
+ * null is the answer that leads to importing, which is the safe direction: the
+ * first run has no meta table at all, and a transient query failure should not
+ * be mistaken for "already up to date".
+ */
+function publishedHash(binding) {
+  const res = wrangler(
+    ['d1', 'execute', binding, '--remote', '--json', '--command',
+      "SELECT value FROM meta WHERE key = 'content_hash'"],
+    { capture: true, allowFail: true },
+  );
+  if (res.code !== 0) return null;
+  try {
+    const parsed = JSON.parse(res.out.slice(res.out.indexOf('[')));
+    return parsed?.[0]?.results?.[0]?.value ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -199,7 +224,8 @@ const CHILD_ENV = TOKEN
  *
  * Only used on the Windows npx fallback. Node concatenates the command and its
  * arguments WITHOUT escaping them when `shell` is set, so an unquoted path
- * containing a space — a checkout under "C:\Users\First Last" — would be split
+ * containing a space — a checkout under a user directory with a space in it —
+ * would be split
  * into two arguments. Doubling a double quote is how cmd.exe escapes one.
  */
 const quoted = (a) => (/[\s"]/.test(String(a)) ? `"${String(a).replace(/"/g, '""')}"` : String(a));
@@ -460,15 +486,47 @@ if (CHECK_ONLY) {
   process.exit(0);
 }
 
-// ----------------------------------------------------------------- 4. schema
-step(4, 'applying schema (drops and recreates the two tables)');
-wrangler(['d1', 'execute', DB_BINDING, '--remote', `--file=${SCHEMA_SQL}`, '-y']);
-console.log('  schema applied');
+// ------------------------------------------------- 4/5. schema and import
+//
+// These two steps are a pair and are gated together. Applying the schema DROPs
+// and recreates both tables, so running it WITHOUT the import that follows
+// leaves the live marketplace serving from an empty database. Anything that
+// skips one has to skip the other.
+//
+// Why the extra gate: once Cloudflare connects the repository, it rebuilds and
+// redeploys on every push to the production branch — and the refresh workflow
+// pushes a commit to that branch every single day. Re-importing byte-identical
+// data on each of those builds would spend ~69% of the daily D1 write budget
+// for nothing, on top of the import the refresh itself already does. The meta
+// table records the hash of what is published, so the comparison is a single
+// indexed read.
+const localHash = stats?.contentHash ?? null;
+let reimport = !SKIP_IMPORT;
+let skipReason = SKIP_IMPORT ? '--skip-import' : null;
 
-// --------------------------------------------------------------- 5. import
-if (SKIP_IMPORT) {
-  step(5, 'import skipped (--skip-import)');
+if (reimport && CLOUD && !FORCE && localHash) {
+  const live = publishedHash(DB_BINDING);
+  if (live === null) {
+    console.log('\n  no published content hash yet — importing as a first run');
+  } else {
+    console.log(`\n  published content hash: ${live}`);
+    console.log(`  local content hash    : ${localHash}`);
+    if (live === localHash) {
+      reimport = false;
+      skipReason = `content unchanged (${localHash})`;
+    }
+  }
+}
+
+if (!reimport) {
+  step(4, `schema and import skipped (${skipReason})`);
+  console.log('  the database is left exactly as it is');
 } else {
+  step(4, 'applying schema (drops and recreates the two tables)');
+  wrangler(['d1', 'execute', DB_BINDING, '--remote', `--file=${SCHEMA_SQL}`, '-y']);
+  console.log('  schema applied');
+
+  step(5, `importing ${importMb.toFixed(1)} MB into D1`);
   step(5, `importing ${importMb.toFixed(1)} MB into D1`);
   if (stats?.writes) {
     const pct = ((stats.writes.estimated / DAILY_WRITE_BUDGET) * 100).toFixed(0);

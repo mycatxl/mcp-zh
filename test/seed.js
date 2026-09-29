@@ -287,6 +287,50 @@ console.log('\n8) --check does not write wrangler.toml');
   );
 }
 
+// ---- 9. schema and import are gated together -----------------------------
+// Once Cloudflare connects the repository it rebuilds on every push, and the
+// refresh workflow pushes daily — so that path runs far more often than it
+// has new data. Re-importing identical content would spend ~69% of the daily
+// D1 write budget each time, on top of the import the refresh itself does.
+//
+// The gate has to cover BOTH steps. The schema DROPs and recreates the tables,
+// so skipping the import while still applying the schema would leave a live
+// marketplace serving from an empty database — worse than the wasted budget.
+console.log('\n9) identical content is not re-imported');
+{
+  const src = read('scripts/deploy.mjs');
+  const gateAt = src.indexOf('let reimport = !SKIP_IMPORT');
+  const skipAt = src.indexOf('if (!reimport) {', gateAt);
+  const schemaAt = src.indexOf("step(4, 'applying schema", gateAt);
+  const importAt = src.indexOf('`importing ${importMb', gateAt);
+
+  check('the gate exists', gateAt !== -1);
+  check('it reads the published hash from D1', /publishedHash\(DB_BINDING\)/.test(src));
+  check('the query is against the meta table', /SELECT value FROM meta WHERE key = 'content_hash'/.test(src));
+
+  // Structure: the schema and the import must both live in the else-branch of
+  // the SAME gate, so neither can run without the other.
+  check('a skip branch exists', skipAt !== -1 && skipAt > gateAt);
+  check(
+    'the schema runs only when the gate says re-import',
+    schemaAt !== -1 && skipAt < schemaAt,
+    'applying the schema without the import would empty the live database',
+  );
+  check('the import runs after the schema, in the same branch', importAt !== -1 && schemaAt < importAt);
+  check('the skip branch says the database is untouched', /the database is left exactly as it is/.test(src));
+
+  // A missing hash must mean "import". The first run has no meta table at all,
+  // and a transient query failure must not read as "already up to date".
+  check('publishedHash returns null on failure', /if \(res\.code !== 0\) return null;/.test(src));
+  check('...and null is treated as a first run, not as a match', /live === null/.test(src) && /importing as a first run/.test(src));
+  check('the comparison only skips on an exact match', /if \(live === localHash\)/.test(src));
+
+  // Escape hatches.
+  check('--force defeats the gate', /reimport && CLOUD && !FORCE/.test(src));
+  check('--skip-import now leaves the database alone too', /let reimport = !SKIP_IMPORT/.test(src));
+  check('both flags are documented', /--force\s{11}re-import even when/.test(src) && /--skip-import\s{5}deploy only/.test(src));
+}
+
 console.log('\n--------------------------------------------');
 console.log(`PASS ${pass}   FAIL ${fail}`);
 process.exit(fail === 0 ? 0 : 1);
