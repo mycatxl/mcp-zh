@@ -5,13 +5,27 @@
  * Registry names look like "agency.ottobot/business-contact-finder" or
  * "ad.getle/leads". The namespace part is usually a brand; the path part is
  * usually descriptive. We cannot tell them apart structurally, so we use a
- * vocabulary test: anything in this list is translatable, everything else that
- * appears in a name is treated as a brand and hidden behind a marker.
+ * vocabulary test: anything recognised as ordinary vocabulary is translatable,
+ * everything else that appears in a name is treated as a brand and hidden
+ * behind a marker.
  *
- * The list therefore has to be generous. A missing word here means a title that
- * stays in English ("Inside Ads" would not become "内部广告"); a wrongly included
- * word means a brand gets translated. Missing words are the more visible failure,
- * so err on the side of inclusion.
+ * TWO SOURCES OF EVIDENCE, and the second one matters more than it looks:
+ *
+ *   1. the hand-written list below — curated, good at tooling vocabulary, and
+ *      necessarily incomplete;
+ *   2. CORPUS_GENERIC, generated from the registry corpus itself by
+ *      generator/build-word-stats.js.
+ *
+ * A stoplist can never stay complete, and every word it misses is silently
+ * treated as a brand and left in English — that is the whole reason titles came
+ * out like "承包商执照 Changes" and "Licensed 房子 Painters". Measured against
+ * the real corpus, the hand list alone left 15,859 name tokens protected across
+ * 11,647 of 23,097 titles. Evidence (2) is what fixes that, without any
+ * dictionary and without releasing genuine brands.
+ *
+ * The list below still has to be generous — a wrongly included word means a
+ * brand gets translated — but it is no longer the only thing standing between
+ * an ordinary English word and a half-English title.
  */
 
 const TRANSPORT = [
@@ -264,11 +278,58 @@ const COMMON_SHORT = [
   'north', 'south', 'east', 'west', 'northern', 'southern', 'eastern', 'western',
 ];
 
+
+// Generated from the corpus; lists words that are ordinary vocabulary rather
+// than part of a brand. See generator/build-word-stats.js.
+import { CORPUS_GENERIC } from './word-stats.generated.js';
 export const GENERIC_WORDS = new Set([...TRANSPORT, ...GENERIC_NOUNS, ...COMMON_SHORT].map((w) => w.toLowerCase()));
 
-/** True when the token is generic vocabulary (translatable) rather than a brand. */
+/** True when the hand-written list says the token is ordinary vocabulary. */
 export function isGenericWord(token) {
   return GENERIC_WORDS.has(String(token).toLowerCase());
+}
+
+/**
+ * Plausible base forms of an English word.
+ *
+ * The hand list holds base forms, but registry names are full of inflections:
+ * "changes", "licensed", "painters", "signals". Checking the inflected form
+ * only means those miss the list and get treated as brands. Stripping common
+ * endings is enough to hit the base form, and every candidate is checked
+ * against the list, so a wrong guess costs nothing.
+ */
+function stems(word) {
+  const w = word.toLowerCase();
+  const out = [w];
+  if (w.endsWith('ies')) out.push(`${w.slice(0, -3)}y`);
+  if (w.endsWith('es')) out.push(w.slice(0, -2));
+  if (w.endsWith('s')) out.push(w.slice(0, -1));
+  if (w.endsWith('ed')) out.push(w.slice(0, -2), w.slice(0, -1));
+  if (w.endsWith('ing')) out.push(w.slice(0, -3), `${w.slice(0, -3)}e`);
+  if (w.endsWith('er')) out.push(w.slice(0, -2), w.slice(0, -1));
+  if (w.endsWith('or')) out.push(w.slice(0, -2));
+  if (w.endsWith('ly')) out.push(w.slice(0, -2));
+  return out;
+}
+
+/**
+ * True when the token is ordinary vocabulary, from either source of evidence:
+ *
+ *   1. the hand-written list (also via a stripped base form), or
+ *   2. CORPUS_GENERIC — words the corpus itself shows are used far beyond the
+ *      records that name them. See generator/build-word-stats.js.
+ *
+ * Evidence (2) is what fixes the bulk of the mixed-language titles: a stoplist
+ * cannot stay complete, and every word it missed was silently treated as a
+ * brand and left in English.
+ */
+export function isOrdinaryWord(token) {
+  const candidates = new Set(stems(token));
+  for (const w of candidates) {
+    if (w.length >= 3 && GENERIC_WORDS.has(w)) return true;
+    if (CORPUS_GENERIC.has(w)) return true;
+  }
+  return false;
 }
 
 /**
@@ -282,7 +343,7 @@ export function nameTokens(registryName) {
     const t = part.trim();
     if (t.length < 3) continue;
     if (!/^[A-Za-z][A-Za-z0-9]*$/.test(t)) continue;
-    if (isGenericWord(t)) continue;
+    if (isOrdinaryWord(t)) continue;
     out.add(t);
   }
   return out;

@@ -103,6 +103,7 @@ PI-Desktop 的 MCP 市场有个 bug：「添加源」只改内存，**从不写�
 | 去重 | 10 条（id 派生后重复） |
 | **对外提供** | **34,279 条** |
 | 翻译 | 59,985 段文本，0 失败 |
+| 标题里残留普通英文词 | 从 3,327 条降到 **1,481 条**（−55.5%） |
 | 分类 | devtools 23,807 / web 5,356 / productivity 3,112 / data 1,582 / docs 422 |
 | 导入写入 | 68,564 行（D1 日额度的 69%） |
 | 每页体积 | ~90 KB（4 MB 上限的 46 倍余量） |
@@ -125,10 +126,11 @@ test/                    测试
 ## 开发
 
 ```bash
-npm test                  # 全部测试
-npm run fetch             # 抓官方全量（约 19 分钟）
-npm run translate         # 翻译并生成 data/import.sql
-npm run verify            # 用真实 SQLite 全量校验
+npm test                     # 全部测试（239 项断言）
+npm run fetch                # 抓官方全量（约 19 分钟）
+npm run word-stats           # 从语料重建"普通词 vs 品牌"词表
+npm run translate            # 翻译并生成 data/import.sql
+npm run verify               # 用真实 SQLite 全量校验
 node test/e2e.js --base=https://<你的 Worker>.workers.dev
 ```
 

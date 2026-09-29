@@ -303,7 +303,9 @@ async function main() {
   fs.writeFileSync(path.join(DATA, 'stats.json'), JSON.stringify(stats, null, 2), 'utf8');
 
   console.log('--------------------------------------------');
-  console.log('content hash :', stats.contentHash, '(unchanged hash => nothing to publish)');
+  console.log('content hash :', stats.contentHash);
+  console.log('             : this is what decides whether an import is worth its');
+  console.log('             : write budget — if it matches what D1 publishes, nothing happens');
   console.log('raw records  :', stats.rawRecords);
   console.log('served       :', stats.entries, '(every one is installable and visible)');
   console.log('dropped      :', stats.dropped, '(the client would drop these; serving them wastes page slots)');

@@ -108,18 +108,35 @@ export function applyGlossary(text) {
  * Hide protected tokens behind `[[A<n>]]` markers — one pass, so markers are
  * never re-scanned.
  *
+ * Two things beyond the plain substitution:
+ *
+ *  - A brand immediately followed by a sentence period is protected WITH the
+ *    period ("hood." not "hood"). Left outside the marker the engine converts it
+ *    to a full-width 。, which turned "hood. — .hood name service" into
+ *    "hood。 — .hood 名称服务".
+ *  - Tokens with NO separator between them are merged into a single marker. The
+ *    engine drops the space between two adjacent markers as often as it keeps
+ *    it, and once it has, nothing downstream can tell whether the tokens were
+ *    originally joined or merely adjacent — "CertScore" + ".ai" is the single
+ *    word "CertScore.ai" and came out as "CertScore.aiMCP". Merging at mask time
+ *    makes the answer unambiguous: adjacent markers with no space between them
+ *    were contiguous in the source, so their markers become one.
+ *
  * @param {string} text
  * @param {{extra?: Set<string>}} opts  literal brand tokens to protect
  * @returns {{masked: string, table: Map<string,string>}} table: original token -> marker
  */
 export function mask(text, { extra } = {}) {
-  const table = new Map();
+  const table = new Map(); // token -> marker
+  const byMarker = new Map(); // marker -> token, kept in step by put()
   let n = 0;
   const put = (token) => {
-    if (table.has(token)) return table.get(token);
+    const existing = table.get(token);
+    if (existing) return existing;
     n += 1;
     const marker = `[[A${n}]]`;
     table.set(token, marker);
+    byMarker.set(marker, token);
     return marker;
   };
 
@@ -132,26 +149,60 @@ export function mask(text, { extra } = {}) {
     // Shorter tokens stay exact-word only, to avoid eating ordinary words.
     for (const token of [...extra].filter((t) => t && t.length >= 3).sort((a, b) => b.length - a.length)) {
       const cls = literalClass(token);
-      alts.push(token.length >= 5 ? `\\b${cls}[A-Za-z0-9]*\\b` : `\\b${cls}\\b`);
+      const core = `\\b${cls}${token.length >= 5 ? '[A-Za-z0-9]*' : ''}`;
+      // The period variant goes first so that it wins over the plain form.
+      alts.push(`${core}\\.(?=\\s|$)`);
+      alts.push(`${core}\\b`);
     }
   }
+  // Existing markers are consumed and returned untouched, which is what makes
+  // the pass safe to run over its own output. Without this, the letter+digit
+  // pattern matches the "A1" inside "[[A1]]" and nests it into "[[[[A1]]]]" —
+  // indistinguishable from a real marker and impossible to restore.
   alts.push(...PROTECT_SOURCES);
+  alts.unshift('\\[\\[A\\d+\\]\\]');
 
   const combined = new RegExp(alts.join('|'), 'g');
-  return { masked: text.replace(combined, (m) => put(m)), table };
+  const MARKER = /^\[\[A\d+\]\]$/;
+  let masked = text.replace(combined, (m) => (MARKER.test(m) ? m : put(m)));
+
+  // Collapse markers that ended up directly adjacent, repeatedly, so a run of
+  // three contiguous tokens merges in one pass rather than pairwise. Merging
+  // registers the combined token through put(), which is what keeps byMarker
+  // able to resolve the marker the previous round just created.
+  let previous;
+  do {
+    previous = masked;
+    masked = masked.replace(/\[\[A(\d+)\]\]\[\[A(\d+)\]\]/g, (whole, a, b) => {
+      const ta = byMarker.get(`[[A${a}]]`);
+      const tb = byMarker.get(`[[A${b}]]`);
+      return ta == null || tb == null ? whole : put(ta + tb);
+    });
+  } while (masked !== previous);
+
+  return { masked, table };
 }
 
 /**
  * Restore markers.
  *  - tolerant of whitespace/case the engine introduces inside the brackets
- *  - re-inserts a space when the engine glues two markers together ("]][["),
- *    which would otherwise merge two separate tokens into one word
+ *  - re-inserts a space when the engine glues two markers together ("]][[")
+ *
+ * ORDER MATTERS, and getting it wrong was a real bug. The separator has to be
+ * restored BEFORE the markers are substituted: the substitution replaces each
+ * marker with its token, so by the time "]][[" could be found it no longer
+ * exists as such, the space is never reinserted, and two separate tokens fuse
+ * into one word. "CertScore.ai MCP Blade" came out as "CertScore.aiMCP 刀片".
+ *
+ * Restoring first is only safe because mask() merges markers whose tokens were
+ * genuinely contiguous — so a glued pair here always means the engine dropped a
+ * separator that was really there.
  */
 export function unmask(text, table) {
   const byMarker = new Map([...table].map(([token, marker]) => [marker, token]));
   const out = String(text ?? '')
-    .replace(/\[\[\s*A\s*(\d+)\s*\]\]/gi, (m, d) => byMarker.get(`[[A${d}]]`) ?? m)
-    .replace(/\]\]\s*\[\[/g, ']] [[');
+    .replace(/\]\]\s*\[\[/g, ']] [[')
+    .replace(/\[\[\s*A\s*(\d+)\s*\]\]/gi, (m, d) => byMarker.get(`[[A${d}]]`) ?? m);
   // The engine pads markers with spaces; normalise CJK<->latin boundaries.
   return out
     .replace(/([\u3400-\u9fff])\s*([A-Za-z0-9])/g, '$1 $2')

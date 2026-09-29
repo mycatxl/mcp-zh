@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-09-28T18:35:42.507Z",
-  "contentHash": "46e836835708b4c4",
+  "generatedAt": "2026-09-29T08:08:56.832Z",
+  "contentHash": "aada0f986b68ddb8",
   "rawRecords": 36888,
   "entries": 34279,
   "dropped": 2599,
@@ -29,7 +29,7 @@
     "data": 1582,
     "docs": 422
   },
-  "servedBytes": 31021877,
+  "servedBytes": 31013207,
   "avgBytesPerRecord": 905,
   "responseBytesPerPage": 90500,
   "statementBytesCap": 92160,
@@ -40,11 +40,11 @@
     "basis": "calibrated against a real D1 import (see measure-writes.js)"
   },
   "translation": {
-    "hit": 57039,
-    "miss": 0,
-    "chars": 0,
-    "requests": 0,
+    "hit": 43642,
+    "miss": 13397,
+    "chars": 792160,
+    "requests": 447,
     "failed": 0,
-    "cacheSize": 57046
+    "cacheSize": 70443
   }
 }

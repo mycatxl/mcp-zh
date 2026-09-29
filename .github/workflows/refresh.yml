@@ -91,6 +91,13 @@ jobs:
       - name: Fetch the registry (~19 min)
         run: node generator/update.js
 
+      # Which words from a registry name are ordinary vocabulary rather than a
+      # brand is decided from the corpus, so this has to run after the fetch and
+      # before the translation. The generated file is committed as well, so a
+      # fresh clone or a one-click deploy builds without needing the crawl.
+      - name: Rebuild the corpus word statistics
+        run: node generator/build-word-stats.js
+
       - name: Translate and regenerate the import file
         run: node generator/step3-sql.js
 
@@ -107,6 +114,9 @@ jobs:
       # regression here means the mirror is broken, not the data.
       - name: Check the extracted host mapper still behaves
         run: node test/host-mapper.js
+
+      - name: Check masking and brand detection
+        run: node test/translate-mask.js
 
       - name: Check source ordering rules
         run: node test/source-order.js
