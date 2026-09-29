@@ -4,6 +4,19 @@
   "private": true,
   "type": "module",
   "description": "A Chinese translation of the official MCP registry, served through the same paginated protocol — one source URL in the market, no plugins, works in strict network mode.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mycatxl/mcp-zh.git"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "chinese",
+    "translation",
+    "cloudflare-workers",
+    "d1"
+  ],
   "scripts": {
     "fetch": "node generator/step1-fetch.js",
     "sample": "node generator/step2-sample.js",
@@ -30,7 +43,6 @@
 
     "dev": "wrangler dev --local --port 8788",
 
-    "_comment_build": "Cloudflare's Deploy to Cloudflare button pre-fills its build and deploy fields from these two names, so they have to work in a FRESH CLONE with no data/ directory and no crawl. `build` therefore fetches the pre-built dataset rather than regenerating it, and the translation step lives under `translate`.",
     "build": "node scripts/seed.mjs",
     "deploy": "node scripts/deploy.mjs --cloud",
     "seed": "node scripts/seed.mjs",
