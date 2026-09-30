@@ -230,6 +230,5 @@ jobs:
             # GitHub does not start workflow runs for pushes made with the
             # built-in GITHUB_TOKEN, which is what the `git push` below uses.
             git commit -m "data: refresh $(date -u +%Y-%m-%d)"
-            git commit -m "data: refresh $(date -u +%Y-%m-%d)"
             git push
           fi

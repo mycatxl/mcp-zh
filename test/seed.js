@@ -410,6 +410,15 @@ console.log('\n11) the daily commit does not carry a build-skipping marker');
     .join('\n');
 
   check('the summary commit is still there', commitLine !== '');
+  // Exactly ONE commit. Two would be worse than untidy: the first commits, the
+  // second finds nothing staged and exits 1, `bash -e` stops the step right
+  // there, and the `git push` that follows never runs — so the release gets the
+  // new dataset while the repository keeps the old stats.json, and the build
+  // Cloudflare triggers on that push never happens at all. Observed in a real
+  // run, not theorised.
+  const commitLines = wf.split('\n').filter((l) => /^\s*git commit -m /.test(l));
+  check('the workflow commits the summary exactly once', commitLines.length === 1, `${commitLines.length} commit line(s)`);
+  check('the push follows the commit', /^\s*git commit -m [\s\S]*?^\s*git push\s*$/m.test(wf));
   check('the commit message carries no skip marker', !markers.test(commitLine), commitLine.trim());
   check(
     'no skip marker in any line the runner executes',
