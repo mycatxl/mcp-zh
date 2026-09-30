@@ -385,7 +385,42 @@ console.log('\n10) the refresh workflow reads the hash from D1, not /health');
   check('...with the credentials it needs', /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/.test(wf));
   check('the hash still reaches the decide step', /echo "hash=\$HASH" >> "\$GITHUB_OUTPUT"/.test(wf));
 }
+// ---- 11. the daily commit must still wake Cloudflare up -------------------
+// The refresh workflow commits data/stats.json every night, and that push is
+// what Cloudflare Workers Builds reacts to — which is the ONLY way the new
+// dataset reaches D1 on the one-click flow, since the build checkout runs the
+// import. Workers Builds honours the same skip markers as Cloudflare Pages, so
+// a `[skip ci]` here does not mean "skip the noisy workflow", it means "leave
+// the live database on yesterday's data". The workflow would stay green while
+// the marketplace quietly stopped updating.
+//
+// The marker is also unnecessary: GitHub never starts a workflow run for a
+// push made with the built-in GITHUB_TOKEN, so the refresh cannot re-trigger
+// itself either way.
+console.log('\n11) the daily commit does not carry a build-skipping marker');
+{
+  const wf = read('.github/workflows/refresh.yml');
+  const markers = /\[(skip[ -]?ci|ci[ -]?skip|no ci|skip actions|actions skip|cf-pages-skip)\]/i;
+  const commitLine = /^\s*git commit -m .*$/m.exec(wf)?.[0] ?? '';
+  // Comments are stripped before the scan: this file explains the marker by
+  // name, and that explanation must not read as a use of it.
+  const live = wf
+    .split('\n')
+    .filter((l) => !/^\s*#/.test(l))
+    .join('\n');
 
-console.log('\n--------------------------------------------');
+  check('the summary commit is still there', commitLine !== '');
+  check('the commit message carries no skip marker', !markers.test(commitLine), commitLine.trim());
+  check(
+    'no skip marker in any line the runner executes',
+    !markers.test(live),
+    'Workers Builds skips the rebuild, and the release and D1 drift apart',
+  );
+  check(
+    'and the reason is written down next to it',
+    /NO `\[skip ci\]` HERE/.test(wf),
+    'otherwise the next person adds it back to quieten the notifications',
+  );
+}
 console.log(`PASS ${pass}   FAIL ${fail}`);
 process.exit(fail === 0 ? 0 : 1);

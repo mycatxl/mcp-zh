@@ -214,6 +214,16 @@ jobs:
           if git diff --cached --quiet; then
             echo 'no changes'
           else
-            git commit -m "data: refresh $(date -u +%Y-%m-%d) [skip ci]"
+            # NO `[skip ci]` HERE, deliberately. It is what tells Cloudflare
+            # Workers Builds that the dataset moved, and Workers Builds honours
+            # the skip markers (`[skip ci]`, `[CI Skip]`, `[skip actions]`, …).
+            # Adding one back stops the rebuild, and the fresh dataset then sits
+            # in the release while the live database keeps serving the old one —
+            # silently, with a green workflow every night.
+            #
+            # It was never needed to stop this workflow re-triggering itself:
+            # GitHub does not start workflow runs for pushes made with the
+            # built-in GITHUB_TOKEN, which is what the `git push` below uses.
+            git commit -m "data: refresh $(date -u +%Y-%m-%d)"
             git push
           fi
