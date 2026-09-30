@@ -134,7 +134,27 @@ console.log('\n3) seed url -> manifest url');
   );
 
   const manifest = seedManifestUrl(project);
-  check('manifest sits beside the archive', manifest === 'https://github.com/mycatxl/mcp-zh/releases/download/data-latest/MANIFEST.json', manifest ?? '(null)');
+  // The repository itself is deliberately NOT pinned here. A fork, or a
+  // deployment checkout created by the Deploy button, publishes its own
+  // release and points seedUrl at that — the refresh workflow's publish step
+  // uploads to whichever repository it runs in, because GITHUB_TOKEN cannot
+  // write to a different one. Asserting the canonical URL would therefore
+  // fail a correctly-configured deployment. What has to hold is the SHAPE: a
+  // tag-pinned release download whose filename is swapped for MANIFEST.json.
+  check(
+    'manifest sits beside the archive',
+    /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/releases\/download\/[^/\s]+\/MANIFEST\.json$/.test(manifest ?? ''),
+    manifest ?? '(null)',
+  );
+  // And the canonical URL must survive in DEFAULTS, since that is what a
+  // fresh clone with no project.json inherits — otherwise a fork would have
+  // no dataset to download at all.
+  const projectSrc = read('scripts/lib/project.mjs');
+  check(
+    'the shipped default still points at the canonical dataset',
+    projectSrc.includes('https://github.com/mycatxl/mcp-zh/releases/download/data-latest/import.sql.gz'),
+    'inherited by a fresh clone that has no project.json',
+  );
   check('manifest derivation is a pure sibling swap', manifest === seed.replace(/[^/]+$/, 'MANIFEST.json'));
   check('no seed url -> null, not a broken url', seedManifestUrl({ seedUrl: null }) === null);
 }
