@@ -418,9 +418,10 @@ console.log('\n11) the daily commit does not carry a build-skipping marker');
   );
   check(
     'and the reason is written down next to it',
-    /NO `\[skip ci\]` HERE/.test(wf),
+    /NO SKIP MARKER HERE/.test(wf),
     'otherwise the next person adds it back to quieten the notifications',
   );
 }
+console.log('\n--------------------------------------------');
 console.log(`PASS ${pass}   FAIL ${fail}`);
 process.exit(fail === 0 ? 0 : 1);

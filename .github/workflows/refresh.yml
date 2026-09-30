@@ -214,16 +214,22 @@ jobs:
           if git diff --cached --quiet; then
             echo 'no changes'
           else
-            # NO `[skip ci]` HERE, deliberately. It is what tells Cloudflare
+            # NO SKIP MARKER HERE, deliberately. It is what tells Cloudflare
             # Workers Builds that the dataset moved, and Workers Builds honours
             # the skip markers (`[skip ci]`, `[CI Skip]`, `[skip actions]`, …).
             # Adding one back stops the rebuild, and the fresh dataset then sits
             # in the release while the live database keeps serving the old one —
             # silently, with a green workflow every night.
             #
+            # Cloudflare scans the WHOLE commit message, body included. A commit
+            # that merely mentions the marker skips its own build — this was
+            # observed, not assumed: a message explaining this very rule came
+            # back with the build "skipped".
+            #
             # It was never needed to stop this workflow re-triggering itself:
             # GitHub does not start workflow runs for pushes made with the
             # built-in GITHUB_TOKEN, which is what the `git push` below uses.
+            git commit -m "data: refresh $(date -u +%Y-%m-%d)"
             git commit -m "data: refresh $(date -u +%Y-%m-%d)"
             git push
           fi
