@@ -123,7 +123,7 @@ console.log('\n5) the exact strings the host compares');
   check('our url is https', stored[0].url.startsWith('https://'), stored[0].url);
 }
 
-console.log('\n6) the committed snippet file matches the generator');
+console.log('\n6) the local snippet file, when present, matches the generator');
 {
   const snippetPath = path.join(ROOT, 'docs', 'console-snippet.txt');
   if (!URL_) {
@@ -132,7 +132,12 @@ console.log('\n6) the committed snippet file matches the generator');
     // deploy, and a stale one is gitignored rather than committed.
     console.log('  SKIP  snippet file check (project.json has no publicUrl yet)');
   } else if (!fs.existsSync(snippetPath)) {
-    check('docs/console-snippet.txt exists', false, 'run: node scripts/make-snippet.mjs --write');
+    // The file is gitignored, so a fresh clone — and Cloudflare's build
+    // checkout, which is the whole one-click path — never has one. Its
+    // absence is the normal state, not a failure. Where it DOES exist, it is
+    // compared below, and that comparison is what catches a snippet left over
+    // from a previous URL.
+    console.log('  SKIP  snippet file check (not generated on this checkout)');
   } else {
     const doc = fs.readFileSync(snippetPath, 'utf8').trim();
     check('exists and is one line', !doc.includes('\n'), `${doc.length} chars`);
