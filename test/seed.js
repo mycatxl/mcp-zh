@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { loadProject, seedManifestUrl } from '../scripts/lib/project.mjs';
@@ -353,6 +354,59 @@ console.log('\n9) identical content is not re-imported');
   check('--force defeats the gate', /reimport && CLOUD && !FORCE/.test(src));
   check('--skip-import now leaves the database alone too', /let reimport = !SKIP_IMPORT/.test(src));
   check('both flags are documented', /--force\s{11}re-import even when/.test(src) && /--skip-import\s{5}deploy only/.test(src));
+  // WHICH hash the gate compares. This has to be the one inside the file about
+  // to be imported, because that is the row the import writes into `meta`.
+  // data/stats.json is a separate artifact and the two drift apart on the
+  // one-click flow: a build checkout downloads a fresh import.sql but keeps the
+  // repository's stats.json. Comparing that stale copy against the live hash
+  // reads as "unchanged" and silently skips the import — a green build, and a
+  // marketplace still serving yesterday's data.
+  const gateHash = /const localHash = (.+);/.exec(src)?.[1] ?? '';
+  check('the gate asks the import file first', /^fileContentHash\(\)/.test(gateHash), gateHash);
+  check('stats.json is only a fallback', /\?\?\s*stats\?\.contentHash/.test(gateHash), gateHash);
+
+  // And the reader itself: tail-only, and pinned to the 16 hex characters
+  // step3-sql.js emits, so a mangled row reads as "no hash" (which imports)
+  // rather than as a hash that can never match (which re-imports 45 MB daily).
+  const fnAt = src.indexOf('function fileContentHash()');
+  check('the reader exists', fnAt !== -1);
+  const fnBody = fnAt === -1 ? '' : src.slice(fnAt, src.indexOf('\n}', fnAt) + 2);
+  check('it reads the tail, not the whole file', /statSync\(IMPORT_SQL\)\.size/.test(fnBody) && /readSync\(/.test(fnBody));
+  check('the hash length is pinned to 16 hex chars', /\{16\}/.test(fnBody), fnBody.match(/'content_hash'[^/]*/)?.[0]);
+  check('and the reason is written down', /the file's own meta row is authoritative/i.test(src));
+
+  // Behavioural: run the shipped function over a file whose meta row sits past
+  // any sane head-scan window, and over ones that must yield null.
+  const fnStart = fnAt;
+  let depth = 0;
+  let fnEnd = -1;
+  for (let i = src.indexOf('{', fnStart); i < src.length; i += 1) {
+    if (src[i] === '{') depth += 1;
+    else if (src[i] === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        fnEnd = i + 1;
+        break;
+      }
+    }
+  }
+  const shipped = new Function('IMPORT_SQL', 'fs', `${src.slice(fnStart, fnEnd)}; return fileContentHash;`);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-zh-hash-'));
+  const put = (name, text) => {
+    const p = path.join(dir, name);
+    fs.writeFileSync(p, text);
+    return p;
+  };
+  const readHash = (p) => shipped(p, fs)();
+
+  check('reads a hash', readHash(put('a.sql', "('content_hash', 'aaaa1111bbbb2222')")) === 'aaaa1111bbbb2222');
+  const big = put('big.sql', `${'-- filler\n'.repeat(200000)}('content_hash', 'cccc3333dddd4444')`);
+  check('finds it past the tail window', fs.statSync(big).size > 256 * 1024 && readHash(big) === 'cccc3333dddd4444');
+  check('missing file -> null', readHash(path.join(dir, 'nope.sql')) === null);
+  check('no row -> null', readHash(put('b.sql', 'INSERT INTO servers VALUES (1);\n')) === null);
+  check('the schema alone -> null', readHash(path.join(ROOT, 'generator', 'lib', 'schema.sql')) === null);
+  check('truncated hash -> null', readHash(put('c.sql', "('content_hash', 'abc')")) === null);
+  fs.rmSync(dir, { recursive: true, force: true });
 }
 
 // ---- 10. the refresh workflow can actually read the published hash -------

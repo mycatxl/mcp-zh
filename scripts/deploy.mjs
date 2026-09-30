@@ -191,6 +191,35 @@ function publishedHash(binding) {
     return null;
   }
 }
+/**
+ * The content hash recorded INSIDE the file that is about to be imported.
+ *
+ * data/import.sql ends with an `INSERT INTO meta` that carries the hash, the
+ * publish time and the entry count; that row is what D1 will hold after the
+ * import, so it is the only value the skip-or-import decision may be based on.
+ *
+ * Read from the TAIL, where the generator writes it, so a 45 MB file is not
+ * scanned; 256 KB is far more than that row needs.
+ *
+ * The length is pinned to the 16 hex characters step3-sql.js emits (sha256,
+ * sliced). A looser pattern would accept a truncated or mangled row and hand
+ * the gate a hash that can never match, which reads as "changed" and re-imports
+ * 45 MB for nothing — the opposite failure, and the expensive one.
+ */
+function fileContentHash() {
+  if (!fs.existsSync(IMPORT_SQL)) return null;
+  const size = fs.statSync(IMPORT_SQL).size;
+  const take = Math.min(size, 256 * 1024);
+  const fd = fs.openSync(IMPORT_SQL, 'r');
+  try {
+    const tail = Buffer.alloc(take);
+    fs.readSync(fd, tail, 0, take, size - take);
+    return /'content_hash',\s*'([0-9a-f]{16})'/.exec(tail.toString('utf8'))?.[1] ?? null;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 
 /**
  * Read a user-scope environment variable on Windows.
@@ -509,7 +538,19 @@ if (CHECK_ONLY) {
 // for nothing, on top of the import the refresh itself already does. The meta
 // table records the hash of what is published, so the comparison is a single
 // indexed read.
-const localHash = stats?.contentHash ?? null;
+//
+// The hash compared is the one INSIDE the file about to be imported, not the
+// one in data/stats.json. They are normally the same, and that is exactly what
+// makes the difference easy to miss: a build checkout downloads import.sql
+// (scripts/seed.mjs) but keeps whatever stats.json the repository has, because
+// the download cannot know it should rewrite a tracked file. On the one-click
+// flow those two drift apart on every refresh — the repository's copy is only
+// updated by the workflow's own commit — and reading stats.json then compares
+// yesterday's hash against the live one, decides "content unchanged", and skips
+// the import for the dataset that was just downloaded. Silently, with a green
+// build. The file's own meta row is authoritative because that is the row the
+// import writes.
+const localHash = fileContentHash() ?? stats?.contentHash ?? null;
 let reimport = !SKIP_IMPORT;
 let skipReason = SKIP_IMPORT ? '--skip-import' : null;
 
